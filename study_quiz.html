@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>오늘 뭐 배웠지?</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f8f9fa;
+    --surface: #ffffff;
+    --primary: #4f6ef7;
+    --primary-light: #eef0ff;
+    --danger: #e53e3e;
+    --success: #38a169;
+    --text: #1a202c;
+    --muted: #718096;
+    --border: #e2e8f0;
+    --radius: 10px;
+  }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 14px 24px; display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 1.2rem; font-weight: 700; }
+  #server-status { font-size: 0.8rem; padding: 4px 10px; border-radius: 20px; font-weight: 600; }
+  #server-status.connected { background: #c6f6d5; color: #276749; }
+  #server-status.disconnected { background: #fed7d7; color: #9b2c2c; }
+
+  #api-key-bar { background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 24px; display: flex; align-items: center; gap: 10px; }
+  #api-key-bar label { font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
+  #api-key-input { flex: 1; font-family: monospace; font-size: 0.85rem; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; }
+
+  nav { display: flex; gap: 0; background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 24px; }
+  nav button { padding: 12px 20px; border: none; background: none; cursor: pointer; font-size: 0.95rem; color: var(--muted); border-bottom: 3px solid transparent; transition: color .2s, border-color .2s; }
+  nav button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+  main { max-width: 800px; margin: 0 auto; padding: 28px 20px; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+  label.field-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: var(--muted); }
+  input[type=text], input[type=date], input[type=number], textarea, select {
+    width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 7px;
+    font-size: 0.95rem; font-family: inherit; transition: border-color .2s;
+  }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary); }
+  textarea { resize: vertical; line-height: 1.6; }
+  .field { margin-bottom: 14px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+  button.btn { padding: 9px 18px; border: none; border-radius: 7px; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: opacity .2s; }
+  button.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.btn.primary { background: var(--primary); color: #fff; }
+  button.btn.primary:hover:not(:disabled) { opacity: 0.88; }
+  button.btn.secondary { background: var(--border); color: var(--text); }
+  button.btn.danger { background: var(--danger); color: #fff; }
+  button.btn.success { background: var(--success); color: #fff; }
+  button.btn.outline { background: transparent; border: 1.5px solid var(--primary); color: var(--primary); }
+
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+
+  .summary-box { background: var(--primary-light); border-left: 4px solid var(--primary); border-radius: 0 var(--radius) var(--radius) 0; padding: 16px; margin-top: 14px; font-size: 0.93rem; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+
+  #loading-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 999; align-items: center; justify-content: center; }
+  #loading-overlay.show { display: flex; }
+  .spinner-box { background: #fff; border-radius: 12px; padding: 30px 40px; text-align: center; }
+  .spinner { width: 36px; height: 36px; border: 4px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto 14px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* DB tab */
+  .search-bar { display: flex; gap: 8px; margin-bottom: 14px; }
+  .search-bar input { flex: 1; }
+  .db-list { display: flex; flex-direction: column; gap: 10px; }
+  .db-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; cursor: pointer; transition: border-color .2s; }
+  .db-item:hover { border-color: var(--primary); }
+  .db-item-header { display: flex; justify-content: space-between; align-items: center; }
+  .db-item-subject { font-weight: 700; font-size: 1rem; }
+  .db-item-date { font-size: 0.82rem; color: var(--muted); }
+  .db-item-preview { font-size: 0.85rem; color: var(--muted); margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .db-item-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+  .db-export-row { display: flex; gap: 8px; margin-bottom: 14px; }
+
+  /* Quiz tab */
+  .difficulty-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px; }
+  .diff-card { border: 2px solid var(--border); border-radius: var(--radius); padding: 14px; cursor: pointer; text-align: center; transition: border-color .2s, background .2s; }
+  .diff-card.selected { border-color: var(--primary); background: var(--primary-light); }
+  .diff-card h3 { font-size: 1rem; margin-bottom: 4px; }
+  .diff-card p { font-size: 0.78rem; color: var(--muted); }
+
+  .quiz-question { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 14px; }
+  .quiz-question h4 { font-size: 0.9rem; color: var(--muted); margin-bottom: 8px; }
+  .quiz-question p { font-size: 1rem; font-weight: 600; margin-bottom: 12px; }
+  .choices { display: flex; flex-direction: column; gap: 8px; }
+  .choice-btn { padding: 9px 14px; border: 1.5px solid var(--border); border-radius: 7px; background: transparent; cursor: pointer; text-align: left; font-size: 0.93rem; transition: border-color .2s, background .2s; }
+  .choice-btn:hover { border-color: var(--primary); background: var(--primary-light); }
+  .choice-btn.selected { border-color: var(--primary); background: var(--primary-light); font-weight: 600; }
+  .choice-btn.correct { border-color: var(--success); background: #f0fff4; }
+  .choice-btn.wrong { border-color: var(--danger); background: #fff5f5; }
+  .fill-input { width: 100%; margin-top: 6px; }
+  .short-input { width: 100%; margin-top: 6px; min-height: 80px; resize: vertical; }
+  .explanation { margin-top: 10px; padding: 10px; background: #fffbeb; border-left: 3px solid #f6ad55; border-radius: 0 6px 6px 0; font-size: 0.88rem; line-height: 1.6; display: none; }
+  .explanation.show { display: block; }
+
+  .result-box { background: var(--primary-light); border: 2px solid var(--primary); border-radius: var(--radius); padding: 24px; text-align: center; }
+  .result-box h2 { font-size: 2rem; margin-bottom: 8px; }
+  .result-box p { color: var(--muted); }
+
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #2d3748; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 0.9rem; z-index: 1000; animation: fadeIn .3s; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; } }
+</style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner-box">
+    <div class="spinner"></div>
+    <div id="loading-text">처리 중…</div>
+  </div>
+</div>
+
+<header>
+  <h1>오늘 뭐 배웠지? 📚</h1>
+  <span id="server-status" class="disconnected">서버 미연결</span>
+</header>
+
+<div id="api-key-bar">
+  <label for="api-key-input">Claude API Key</label>
+  <input type="password" id="api-key-input" placeholder="sk-ant-..." autocomplete="off" />
+</div>
+
+<nav>
+  <button class="active" data-tab="input">📥 입력</button>
+  <button data-tab="db">🗂 DB</button>
+  <button data-tab="quiz">🧠 퀴즈</button>
+</nav>
+
+<main>
+  <!-- INPUT TAB -->
+  <div class="tab-panel active" id="tab-input">
+    <div class="card">
+      <div class="row">
+        <div class="field">
+          <label class="field-label">과목명</label>
+          <input type="text" id="subject" placeholder="예: 컴퓨터구조" />
+        </div>
+        <div class="field">
+          <label class="field-label">날짜</label>
+          <input type="text" id="date" />
+        </div>
+      </div>
+      <div class="field">
+        <label class="field-label">공부 내용</label>
+        <textarea id="content" rows="10" placeholder="오늘 공부한 내용을 입력하세요…"></textarea>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="analyze-btn">분석 후 저장</button>
+        <button class="btn secondary" id="pdf-btn" disabled>📄 PDF 업로드</button>
+        <input type="file" id="pdf-file" accept=".pdf" style="display:none" />
+      </div>
+    </div>
+
+    <div id="summary-section" style="display:none">
+      <div class="card">
+        <label class="field-label">AI 요약 결과</label>
+        <div class="summary-box" id="summary-output"></div>
+        <div class="btn-row" style="margin-top:14px">
+          <button class="btn success" id="confirm-save-btn">✅ 저장 확정</button>
+          <button class="btn secondary" id="cancel-save-btn">취소</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DB TAB -->
+  <div class="tab-panel" id="tab-db">
+    <div class="db-export-row">
+      <button class="btn outline" id="export-btn">📤 JSON 내보내기</button>
+      <label class="btn outline" style="cursor:pointer; padding:9px 18px; border:1.5px solid var(--primary); color:var(--primary); border-radius:7px; font-weight:600; font-size:.9rem;">
+        📥 JSON 가져오기
+        <input type="file" id="import-file" accept=".json" style="display:none" />
+      </label>
+    </div>
+    <div class="search-bar">
+      <input type="text" id="db-search" placeholder="과목명, 내용, 요약 검색…" />
+    </div>
+    <div class="db-list" id="db-list"></div>
+  </div>
+
+  <!-- QUIZ TAB -->
+  <div class="tab-panel" id="tab-quiz">
+    <div class="card" id="quiz-setup">
+      <div class="field">
+        <label class="field-label">난이도</label>
+        <div class="difficulty-cards">
+          <div class="diff-card selected" data-diff="easy">
+            <h3>🟢 Easy</h3>
+            <p>4지선다 + OX</p>
+          </div>
+          <div class="diff-card" data-diff="normal">
+            <h3>🟡 Normal</h3>
+            <p>빈칸 채우기</p>
+          </div>
+          <div class="diff-card" data-diff="hard">
+            <h3>🔴 Hard</h3>
+            <p>서술형/주관식</p>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label class="field-label">소스</label>
+          <select id="quiz-source">
+            <option value="all">전체</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field-label">문제 수 (최대 20)</label>
+          <input type="number" id="quiz-count" value="5" min="1" max="20" />
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" id="start-quiz-btn">퀴즈 시작</button>
+      </div>
+    </div>
+
+    <div id="quiz-area" style="display:none">
+      <div id="quiz-questions"></div>
+      <div class="btn-row" id="quiz-action-row">
+        <button class="btn primary" id="grade-btn">채점하기</button>
+      </div>
+    </div>
+
+    <div id="quiz-result" style="display:none">
+      <div class="result-box">
+        <h2 id="result-score"></h2>
+        <p id="result-detail"></p>
+      </div>
+      <div class="btn-row" style="margin-top:16px">
+        <button class="btn outline" id="retry-quiz-btn">다시 풀기</button>
+        <button class="btn secondary" id="back-setup-btn">설정으로</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const MODEL = 'claude-sonnet-4-20250514';
+const SERVER_URL = window.location.origin.startsWith('http') && !window.location.origin.startsWith('file')
+  ? window.location.origin
+  : 'http://localhost:8000';
+
+let serverConnected = false;
+let db = [];
+let currentEditId = null;
+let currentSummary = '';
+let selectedDiff = 'easy';
+let quizQuestions = [];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function getApiKey() { return document.getElementById('api-key-input').value.trim(); }
+
+function showLoading(msg = '처리 중…') {
+  document.getElementById('loading-text').textContent = msg;
+  document.getElementById('loading-overlay').classList.add('show');
+}
+function hideLoading() { document.getElementById('loading-overlay').classList.remove('show'); }
+
+function toast(msg, duration = 3000) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), duration);
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function genId() { return Date.now().toString(); }
+
+async function callClaude(prompt) {
+  const key = getApiKey();
+  if (!key) throw new Error('API 키를 입력해주세요.');
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Claude API 오류 (${res.status})`);
+  }
+  const data = await res.json();
+  return data.content[0].text;
+}
+
+// ── Server detection ─────────────────────────────────────────────────────────
+async function detectServer() {
+  try {
+    const res = await fetch(`${SERVER_URL}/db`, { signal: AbortSignal.timeout(2000) });
+    if (res.ok) {
+      serverConnected = true;
+      db = await res.json();
+      const st = document.getElementById('server-status');
+      st.textContent = '서버 연결됨';
+      st.className = 'connected';
+      document.getElementById('pdf-btn').disabled = false;
+      renderDb();
+      return;
+    }
+  } catch (_) {}
+  serverConnected = false;
+  const saved = localStorage.getItem('study_db');
+  db = saved ? JSON.parse(saved) : [];
+  renderDb();
+}
+
+// ── Tab switching ─────────────────────────────────────────────────────────────
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'db') renderDb();
+    if (btn.dataset.tab === 'quiz') populateQuizSource();
+  });
+});
+
+// ── Input tab ────────────────────────────────────────────────────────────────
+document.getElementById('date').value = today();
+
+document.getElementById('pdf-btn').addEventListener('click', () => {
+  document.getElementById('pdf-file').click();
+});
+
+document.getElementById('pdf-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  showLoading('PDF 파싱 중…');
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(`${SERVER_URL}/parse`, { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'PDF 파싱 실패');
+    const ta = document.getElementById('content');
+    ta.value = ta.value ? ta.value + '\n\n' + data.text : data.text;
+    toast(`PDF 파싱 완료 (${data.pages}페이지)`);
+  } catch (err) {
+    alert('PDF 파싱 오류: ' + err.message);
+  } finally {
+    hideLoading();
+  }
+});
+
+document.getElementById('analyze-btn').addEventListener('click', async () => {
+  const content = document.getElementById('content').value.trim();
+  if (!content) { alert('공부 내용을 입력해주세요.'); return; }
+  showLoading('Claude가 내용을 분석하는 중…');
+  try {
+    const prompt = `다음은 오늘 공부한 내용이야. 아래 형식으로 한국어로 정리해줘:
+
+## 📌 핵심 개념 (3~5개)
+각 개념을 한 줄로 명확하게 정리
+
+## 💡 오늘 배운 것 요약
+2~3문장으로 전체 내용 요약
+
+## 🔑 키워드
+중요 용어들을 쉼표로 나열
+
+---
+공부 내용:
+${content}`;
+    currentSummary = await callClaude(prompt);
+    document.getElementById('summary-output').textContent = currentSummary;
+    document.getElementById('summary-section').style.display = 'block';
+    document.getElementById('summary-section').scrollIntoView({ behavior: 'smooth' });
+  } catch (err) {
+    alert('오류: ' + err.message);
+  } finally {
+    hideLoading();
+  }
+});
+
+document.getElementById('confirm-save-btn').addEventListener('click', async () => {
+  const subject = document.getElementById('subject').value.trim();
+  const date = document.getElementById('date').value.trim();
+  const content = document.getElementById('content').value.trim();
+  const id = currentEditId || genId();
+
+  const item = { id, subject, date, content, summary: currentSummary, createdAt: new Date().toISOString() };
+
+  if (serverConnected) {
+    showLoading('저장 중…');
+    try {
+      const res = await fetch(`${SERVER_URL}/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(JSON.stringify(data));
+      toast(`저장 완료! (${data.md_path})`);
+    } catch (err) {
+      alert('저장 오류: ' + err.message);
+      return;
+    } finally {
+      hideLoading();
+    }
+  } else {
+    const idx = db.findIndex(x => x.id === id);
+    if (idx >= 0) db[idx] = item;
+    else db.unshift(item);
+    localStorage.setItem('study_db', JSON.stringify(db));
+    toast('로컬 저장 완료');
+  }
+
+  await detectServer();
+  resetInputForm();
+});
+
+document.getElementById('cancel-save-btn').addEventListener('click', resetInputForm);
+
+function resetInputForm() {
+  document.getElementById('summary-section').style.display = 'none';
+  document.getElementById('summary-output').textContent = '';
+  currentSummary = '';
+  currentEditId = null;
+}
+
+// ── DB tab ────────────────────────────────────────────────────────────────────
+document.getElementById('db-search').addEventListener('input', renderDb);
+
+function renderDb() {
+  const q = document.getElementById('db-search').value.toLowerCase();
+  const list = document.getElementById('db-list');
+  const items = db.filter(it =>
+    (it.subject || '').toLowerCase().includes(q) ||
+    (it.content || '').toLowerCase().includes(q) ||
+    (it.summary || '').toLowerCase().includes(q)
+  );
+
+  if (!items.length) {
+    list.innerHTML = '<div style="color:var(--muted);text-align:center;padding:30px">저장된 항목이 없습니다.</div>';
+    return;
+  }
+
+  list.innerHTML = items.map(it => `
+    <div class="db-item">
+      <div class="db-item-header">
+        <span class="db-item-subject">${esc(it.subject || '(제목 없음)')}</span>
+        <span class="db-item-date">${esc(it.date || '')}</span>
+      </div>
+      <div class="db-item-preview">${esc((it.summary || it.content || '').slice(0, 120))}</div>
+      <div class="db-item-actions">
+        <button class="btn outline" style="font-size:.8rem;padding:5px 12px" onclick="editItem('${it.id}')">✏️ 수정</button>
+        <button class="btn danger" style="font-size:.8rem;padding:5px 12px" onclick="deleteItem('${it.id}')">🗑 삭제</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function esc(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function editItem(id) {
+  const item = db.find(x => x.id === id);
+  if (!item) return;
+  currentEditId = id;
+  document.getElementById('subject').value = item.subject || '';
+  document.getElementById('date').value = item.date || '';
+  document.getElementById('content').value = item.content || '';
+  if (item.summary) {
+    currentSummary = item.summary;
+    document.getElementById('summary-output').textContent = item.summary;
+    document.getElementById('summary-section').style.display = 'block';
+  }
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-tab="input"]').classList.add('active');
+  document.getElementById('tab-input').classList.add('active');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function deleteItem(id) {
+  if (!confirm('삭제하시겠습니까?')) return;
+  if (serverConnected) {
+    await fetch(`${SERVER_URL}/db/${id}`, { method: 'DELETE' });
+  }
+  db = db.filter(x => x.id !== id);
+  if (!serverConnected) localStorage.setItem('study_db', JSON.stringify(db));
+  renderDb();
+  toast('삭제 완료');
+}
+
+document.getElementById('export-btn').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `study_db_${today()}.json`;
+  a.click();
+});
+
+document.getElementById('import-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+  try {
+    const text = await file.text();
+    const imported = JSON.parse(text);
+    if (!Array.isArray(imported)) throw new Error('올바른 형식이 아닙니다.');
+    const existingIds = new Set(db.map(x => x.id));
+    const newItems = imported.filter(x => !existingIds.has(x.id));
+    db = [...newItems, ...db];
+    if (serverConnected) {
+      for (const item of newItems) {
+        await fetch(`${SERVER_URL}/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(item),
+        });
+      }
+    } else {
+      localStorage.setItem('study_db', JSON.stringify(db));
+    }
+    toast(`${newItems.length}개 항목 가져오기 완료`);
+    renderDb();
+  } catch (err) {
+    alert('가져오기 오류: ' + err.message);
+  }
+});
+
+// ── Quiz tab ──────────────────────────────────────────────────────────────────
+document.querySelectorAll('.diff-card').forEach(card => {
+  card.addEventListener('click', () => {
+    document.querySelectorAll('.diff-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+    selectedDiff = card.dataset.diff;
+  });
+});
+
+function populateQuizSource() {
+  const sel = document.getElementById('quiz-source');
+  const subjects = [...new Set(db.map(x => x.subject).filter(Boolean))];
+  sel.innerHTML = '<option value="all">전체</option>' +
+    subjects.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+}
+
+document.getElementById('start-quiz-btn').addEventListener('click', async () => {
+  const source = document.getElementById('quiz-source').value;
+  const count = Math.min(20, Math.max(1, parseInt(document.getElementById('quiz-count').value) || 5));
+  const items = source === 'all' ? db : db.filter(x => x.subject === source);
+  if (!items.length) { alert('해당 소스에 저장된 내용이 없습니다.'); return; }
+
+  const context = items.slice(0, 5).map(x => x.content).join('\n\n---\n\n');
+
+  const diffMap = {
+    easy: '4지선다형(type: mc)과 OX형(type: ox) 문제. 4지선다는 choices 4개, OX는 choices: ["O","X"].',
+    normal: '빈칸 채우기 문제(type: fill). 핵심 용어나 개념을 _____로 가린다.',
+    hard: '서술형/주관식 문제(type: short). 정답 예시를 answer에 작성.',
+  };
+
+  const prompt = `다음 학습 내용을 바탕으로 ${count}개의 퀴즈 문제를 만들어줘.
+
+문제 유형: ${diffMap[selectedDiff]}
+
+반드시 아래 JSON 배열 형식만 반환해. 다른 텍스트 없이 JSON만:
+[
+  {
+    "type": "mc",
+    "question": "문제 내용",
+    "choices": ["①선택지1","②선택지2","③선택지3","④선택지4"],
+    "answer": "정답",
+    "explanation": "정답 설명 (1~2문장)"
+  }
+]
+
+학습 내용:
+${context}`;
+
+  showLoading('Claude가 문제를 생성하는 중…');
+  try {
+    const raw = await callClaude(prompt);
+    const jsonMatch = raw.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error('JSON 파싱 실패');
+    quizQuestions = JSON.parse(jsonMatch[0]);
+    renderQuiz();
+    document.getElementById('quiz-setup').style.display = 'none';
+    document.getElementById('quiz-area').style.display = 'block';
+    document.getElementById('quiz-result').style.display = 'none';
+  } catch (err) {
+    alert('퀴즈 생성 오류: ' + err.message);
+  } finally {
+    hideLoading();
+  }
+});
+
+function renderQuiz() {
+  const container = document.getElementById('quiz-questions');
+  container.innerHTML = quizQuestions.map((q, i) => {
+    if (q.type === 'mc' || q.type === 'ox') {
+      const choices = (q.choices || []).map((c, ci) =>
+        `<button class="choice-btn" data-qi="${i}" data-ci="${ci}">${esc(c)}</button>`
+      ).join('');
+      return `<div class="quiz-question" data-qi="${i}" data-type="${q.type}">
+        <h4>문제 ${i+1}</h4>
+        <p>${esc(q.question)}</p>
+        <div class="choices">${choices}</div>
+        <div class="explanation" id="exp-${i}">${esc(q.explanation || '')}</div>
+      </div>`;
+    }
+    if (q.type === 'fill') {
+      return `<div class="quiz-question" data-qi="${i}" data-type="fill">
+        <h4>문제 ${i+1} (빈칸 채우기)</h4>
+        <p>${esc(q.question)}</p>
+        <input type="text" class="fill-input" id="fill-${i}" placeholder="정답 입력" />
+        <div class="explanation" id="exp-${i}">${esc(q.explanation || '')}</div>
+      </div>`;
+    }
+    return `<div class="quiz-question" data-qi="${i}" data-type="short">
+      <h4>문제 ${i+1} (서술형)</h4>
+      <p>${esc(q.question)}</p>
+      <textarea class="short-input" id="short-${i}" placeholder="답변을 입력하세요"></textarea>
+      <div class="explanation" id="exp-${i}">${esc(q.explanation || '')}</div>
+    </div>`;
+  }).join('');
+
+  container.querySelectorAll('.choice-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const qi = btn.dataset.qi;
+      container.querySelectorAll(`.choice-btn[data-qi="${qi}"]`).forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+    });
+  });
+
+  document.getElementById('quiz-action-row').style.display = 'flex';
+}
+
+document.getElementById('grade-btn').addEventListener('click', () => {
+  let correct = 0;
+  const container = document.getElementById('quiz-questions');
+
+  quizQuestions.forEach((q, i) => {
+    const expEl = document.getElementById(`exp-${i}`);
+    expEl.classList.add('show');
+
+    if (q.type === 'mc' || q.type === 'ox') {
+      const selected = container.querySelector(`.choice-btn[data-qi="${i}"].selected`);
+      if (!selected) return;
+      const choices = q.choices || [];
+      const selectedText = choices[parseInt(selected.dataset.ci)];
+      const isCorrect = selectedText === q.answer ||
+        selected.dataset.ci == choices.findIndex(c => c === q.answer);
+      selected.classList.add(isCorrect ? 'correct' : 'wrong');
+      if (!isCorrect) {
+        const correctIdx = choices.indexOf(q.answer);
+        if (correctIdx >= 0) {
+          const correctBtn = container.querySelector(`.choice-btn[data-qi="${i}"][data-ci="${correctIdx}"]`);
+          if (correctBtn) correctBtn.classList.add('correct');
+        }
+      }
+      if (isCorrect) correct++;
+    } else if (q.type === 'fill') {
+      const input = document.getElementById(`fill-${i}`);
+      const userAns = (input?.value || '').trim().toLowerCase();
+      const rightAns = (q.answer || '').trim().toLowerCase();
+      const isCorrect = userAns === rightAns || rightAns.includes(userAns) && userAns.length > 1;
+      if (input) input.style.borderColor = isCorrect ? 'var(--success)' : 'var(--danger)';
+      if (isCorrect) correct++;
+    } else {
+      correct++;
+    }
+  });
+
+  document.getElementById('quiz-action-row').style.display = 'none';
+  const resultSection = document.getElementById('quiz-result');
+  const total = quizQuestions.length;
+  const pct = Math.round((correct / total) * 100);
+  document.getElementById('result-score').textContent = `${pct}점`;
+  document.getElementById('result-detail').textContent = `${total}문제 중 ${correct}개 정답`;
+  resultSection.style.display = 'block';
+  resultSection.scrollIntoView({ behavior: 'smooth' });
+});
+
+document.getElementById('retry-quiz-btn').addEventListener('click', () => {
+  renderQuiz();
+  document.getElementById('quiz-result').style.display = 'none';
+  document.getElementById('quiz-action-row').style.display = 'flex';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+document.getElementById('back-setup-btn').addEventListener('click', () => {
+  document.getElementById('quiz-setup').style.display = 'block';
+  document.getElementById('quiz-area').style.display = 'none';
+  document.getElementById('quiz-result').style.display = 'none';
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+detectServer();
+</script>
+</body>
+</html>
