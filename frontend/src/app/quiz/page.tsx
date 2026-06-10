@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
-import { api, type Question, type MCQData, type FillBlankData, type MatchingData, type EssayData } from "@/lib/api";
+import { api, type Question, type Lecture, type MCQData, type FillBlankData, type MatchingData, type EssayData } from "@/lib/api";
 import MCQ from "@/components/quiz/MCQ";
 import FillBlank from "@/components/quiz/FillBlank";
 import Matching from "@/components/quiz/Matching";
@@ -18,10 +18,14 @@ function QuizPage() {
   const params = useSearchParams();
   const bookId = params.get("bookId") ?? "";
 
+  const [mode, setMode] = useState<"lecture" | "chapter">("lecture");
   const [chapters, setChapters] = useState<string[]>([]);
   const [chapter, setChapter] = useState("");
+  const [lectures, setLectures] = useState<Lecture[]>([]);
+  const [lectureId, setLectureId] = useState("");
   const [selectedTypes, setSelectedTypes] = useState<string[]>(["mcq"]);
   const [countPerType, setCountPerType] = useState(3);
+  const [prebuilding, setPrebuilding] = useState(false);
 
   const [sessionId, setSessionId] = useState("");
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -31,32 +35,79 @@ function QuizPage() {
   const [score, setScore] = useState({ correct: 0, total: 0 });
 
   useEffect(() => {
-    if (bookId) api.books.chapters(bookId).then(setChapters);
+    if (bookId) {
+      api.books.chapters(bookId).then(setChapters);
+      api.books.lectures(bookId).then(setLectures).catch(() => setLectures([]));
+    }
   }, [bookId]);
 
+  const selectedLecture = lectures.find(l => l.id === lectureId);
+  const sessionLabel = mode === "lecture"
+    ? (selectedLecture ? `${selectedLecture.lecture_no}강 ${selectedLecture.title}`.slice(0, 120) : "")
+    : chapter;
+  const canStart = mode === "lecture" ? !!lectureId : !!chapter;
+
+  const startWith = async (qids: string[]) => {
+    const sess = await api.sessions.start({
+      book_id: bookId,
+      chapter: sessionLabel,
+      question_ids: qids,
+    });
+    setSessionId(sess.session_id);
+    setQuestions(sess.questions);
+    setCurrentIdx(0);
+    setStartTime(Date.now());
+    setPhase("quiz");
+  };
+
   const handleStart = async () => {
-    if (!chapter) return;
+    if (!canStart) return;
     setPhase("generating");
     try {
       const gen = await api.questions.generate({
         book_id: bookId,
-        chapter,
+        ...(mode === "lecture" ? { lecture_id: lectureId } : { chapter }),
         types: selectedTypes,
         count_per_type: countPerType,
       });
-      const sess = await api.sessions.start({
-        book_id: bookId,
-        chapter,
-        question_ids: gen.questions.map((q: Question) => q.id),
-      });
-      setSessionId(sess.session_id);
-      setQuestions(sess.questions);
-      setCurrentIdx(0);
-      setStartTime(Date.now());
-      setPhase("quiz");
+      await startWith(gen.questions.map((q: Question) => q.id));
     } catch (err) {
       alert("오류: " + String(err));
       setPhase("setup");
+    }
+  };
+
+  // 강의별: 미리 만들어둔 문제은행으로 바로 풀기
+  const handleStartFromBank = async () => {
+    if (!lectureId) return;
+    try {
+      const bank = await api.lectures.questions(lectureId);
+      if (bank.length === 0) {
+        alert("이 강의에 미리 만든 문제가 없어요. '문제 생성 시작'을 누르거나 먼저 문제은행을 만들어주세요.");
+        return;
+      }
+      setPhase("generating");
+      await startWith(bank.map(q => q.id));
+    } catch (err) {
+      alert("오류: " + String(err));
+      setPhase("setup");
+    }
+  };
+
+  // 강의별: 문제은행 미리 생성
+  const handlePrebuild = async () => {
+    if (!lectureId) return;
+    setPrebuilding(true);
+    try {
+      const res = await api.lectures.prebuild(lectureId, {
+        types: selectedTypes,
+        count_per_type: countPerType,
+      });
+      alert(`문제 ${res.created}개를 이 강의 은행에 저장했어요. '저장된 문제로 풀기'로 바로 풀 수 있어요.`);
+    } catch (err) {
+      alert("오류: " + String(err));
+    } finally {
+      setPrebuilding(false);
     }
   };
 
@@ -99,19 +150,59 @@ function QuizPage() {
         <h2 className="text-2xl font-bold mb-6">퀴즈 설정</h2>
 
         <div className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">챕터 선택</label>
-            <select
-              value={chapter}
-              onChange={e => setChapter(e.target.value)}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-            >
-              <option value="">챕터를 선택하세요</option>
-              {chapters.map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+          {/* 모드 전환 */}
+          <div className="flex gap-2">
+            {([["lecture", "강의별"], ["chapter", "챕터별"]] as const).map(([m, label]) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={`flex-1 py-2 rounded-lg text-sm font-semibold border-2 transition-colors
+                  ${mode === m ? "border-blue-500 bg-blue-50 text-blue-700" : "border-gray-200 text-gray-500"}`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
+
+          {mode === "lecture" ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">강의 선택</label>
+              <select
+                value={lectureId}
+                onChange={e => setLectureId(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">강의를 선택하세요</option>
+                {Array.from(new Set(lectures.map(l => l.part ?? ""))).map(part => (
+                  <optgroup key={part} label={part || "기타"}>
+                    {lectures.filter(l => (l.part ?? "") === part).map(l => (
+                      <option key={l.id} value={l.id}>
+                        {l.source === "minor" ? "[마이너] " : ""}{l.lecture_no}강 · {l.title.slice(0, 50)}
+                        {l.printed_page_start ? ` (p.${l.printed_page_start}~${l.printed_page_end})` : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              {lectures.length === 0 && (
+                <p className="text-xs text-amber-600 mt-1">강의 목록이 비어있어요. 백엔드에서 강의 seed가 됐는지 확인하세요.</p>
+              )}
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">챕터 선택</label>
+              <select
+                value={chapter}
+                onChange={e => setChapter(e.target.value)}
+                className="w-full border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">챕터를 선택하세요</option>
+                {chapters.map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">문제 유형</label>
@@ -148,11 +239,30 @@ function QuizPage() {
 
           <button
             onClick={handleStart}
-            disabled={!chapter || selectedTypes.length === 0}
+            disabled={!canStart || selectedTypes.length === 0}
             className="w-full py-3 rounded-xl bg-blue-600 text-white font-bold text-lg disabled:opacity-40"
           >
             문제 생성 시작
           </button>
+
+          {mode === "lecture" && (
+            <div className="flex gap-3">
+              <button
+                onClick={handleStartFromBank}
+                disabled={!lectureId}
+                className="flex-1 py-2.5 rounded-xl border-2 border-blue-200 text-blue-700 font-semibold text-sm disabled:opacity-40"
+              >
+                저장된 문제로 풀기
+              </button>
+              <button
+                onClick={handlePrebuild}
+                disabled={!lectureId || selectedTypes.length === 0 || prebuilding}
+                className="flex-1 py-2.5 rounded-xl border-2 border-gray-200 text-gray-600 font-semibold text-sm disabled:opacity-40"
+              >
+                {prebuilding ? "만드는 중..." : "이 강의 문제 미리 만들기"}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </main>

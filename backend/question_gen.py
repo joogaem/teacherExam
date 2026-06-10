@@ -131,31 +131,91 @@ GRADING_PROMPT = """
 """
 
 
+def _parse_json(raw: str):
+    """Claude 응답에서 JSON 추출 — 코드펜스/설명문이 섞여도 견고하게."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw[:4].lower() == "json":
+            raw = raw[4:]
+    raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # 첫 [ ~ 마지막 ] (배열) 또는 { ~ } (객체) 만 잘라서 재시도
+        for open_c, close_c in (("[", "]"), ("{", "}")):
+            i, j = raw.find(open_c), raw.rfind(close_c)
+            if i != -1 and j > i:
+                return json.loads(raw[i:j + 1])
+        raise
+
+
 def generate_questions(
     context_chunks: list[dict],
     question_type: str,
     count: int = 3,
 ) -> list[dict]:
-    """RAG 청크 → 문제 생성"""
-    context = "\n\n---\n\n".join(c["content"] for c in context_chunks)
-    prompt = PROMPTS[question_type].format(context=context, count=count)
+    """RAG 청크 → 단일 유형 문제 생성 (하위호환용)."""
+    return generate_questions_multi(context_chunks, [question_type], count).get(question_type, [])
 
-    msg = claude.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
+
+# ── 유형 통합 생성 ────────────────────────────────────────────────
+# 유형별 요구사항 + 출력 아이템 형식 (단일 호출에서 전 유형을 한 번에 생성)
+TYPE_SPECS = {
+    "mcq": (
+        "객관식(4지선다). 정답은 교재 근거, 오답지는 그럴듯하게.",
+        '{"stem":"문제","options":["①..","②..","③..","④.."],"answer":0,"explanation":"해설"}',
+    ),
+    "fill_blank": (
+        "빈칸 완성. 핵심 개념어/이론명이 빈칸(___). 힌트 제공 가능.",
+        '{"template":"___는 비고츠키가 제안한...","answers":["ZPD","근접발달영역"],"hints":["비고츠키 핵심 개념"]}',
+    ),
+    "matching": (
+        "짝맞추기. 이론가-개념/모형-특징 등 1:1 대응, 왼쪽·오른쪽 각 3~6개.",
+        '{"instruction":"학자와 이론을 연결하시오.","left":["타일러","타바"],"right":["목표중심 모형","귀납적 개발 모형"],"pairs":[[0,0],[1,1]]}',
+    ),
+    "essay": (
+        "서술형(임용 수준, 400자 내외 예상답안). 핵심 개념 포함 여부로 채점 가능.",
+        '{"stem":"문제","model_answer":"예시 답안","key_concepts":["개념1","개념2"],"rubric":"채점 기준"}',
+    ),
+}
+
+
+def generate_questions_multi(
+    context_chunks: list[dict],
+    types: list[str],
+    count: int = 3,
+) -> dict[str, list[dict]]:
+    """RAG 청크 → 선택한 전 유형을 1회 호출로 생성. {유형: [문제...]} 반환."""
+    if not types:
+        return {}
+    context = "\n\n---\n\n".join(c["content"] for c in context_chunks)
+
+    spec_lines, out_lines = [], []
+    for t in types:
+        desc, fmt = TYPE_SPECS[t]
+        spec_lines.append(f'- "{t}" {count}개: {desc}')
+        out_lines.append(f'  "{t}": [ {fmt}, ... {count}개 ]')
+
+    prompt = (
+        "다음 교육학 교재 내용을 바탕으로 임용고시 수준 문제를 유형별로 만들어라.\n\n"
+        f"[교재 내용]\n{context}\n\n"
+        "[생성할 유형과 개수]\n" + "\n".join(spec_lines) + "\n\n"
+        "[출력 형식 — 아래 키를 가진 JSON 객체 하나만 출력, 다른 텍스트 없이]\n"
+        "{\n" + ",\n".join(out_lines) + "\n}\n"
     )
 
-    raw = msg.content[0].text.strip()
-
-    # JSON 파싱 (마크다운 코드블록 제거)
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-
-    questions = json.loads(raw)
-    return questions
+    # 유형·개수에 따라 출력 토큰 여유 확보
+    max_tokens = min(8192, 1200 + 700 * len(types) * count)
+    msg = claude.messages.create(
+        model=MODEL,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    obj = _parse_json(msg.content[0].text)
+    if not isinstance(obj, dict):
+        return {}
+    return {t: (obj.get(t) or []) for t in types}
 
 
 def grade_essay(question_data: dict, user_answer: str) -> dict:
@@ -174,10 +234,4 @@ def grade_essay(question_data: dict, user_answer: str) -> dict:
         messages=[{"role": "user", "content": prompt}],
     )
 
-    raw = msg.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-
-    return json.loads(raw)
+    return _parse_json(msg.content[0].text)

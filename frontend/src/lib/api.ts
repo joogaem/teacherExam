@@ -19,6 +19,15 @@ export const api = {
       return fetch(`${BASE}/books/upload`, { method: "POST", body: fd }).then(r => r.json());
     },
     chapters: (bookId: string) => fetchAPI<string[]>(`/books/${bookId}/chapters`),
+    lectures: (bookId: string) => fetchAPI<Lecture[]>(`/books/${bookId}/lectures`),
+  },
+  lectures: {
+    questions: (lectureId: string) => fetchAPI<Question[]>(`/lectures/${lectureId}/questions`),
+    prebuild: (lectureId: string, body?: { types?: string[]; count_per_type?: number }) =>
+      fetchAPI<{ created: number; questions: Question[] }>(`/lectures/${lectureId}/prebuild`, {
+        method: "POST",
+        body: JSON.stringify(body ?? {}),
+      }),
   },
   questions: {
     generate: (body: GenerateRequest) =>
@@ -101,9 +110,24 @@ export interface EssayData {
   rubric: string;
 }
 
+export interface Lecture {
+  id: string;
+  book_id: string;
+  source: "main" | "minor";
+  lecture_no: number;
+  week: string | null;
+  part: string | null;
+  title: string;
+  printed_page_start: number | null;
+  printed_page_end: number | null;
+  pdf_page_start: number | null;
+  pdf_page_end: number | null;
+}
+
 export interface GenerateRequest {
   book_id: string;
-  chapter: string;
+  chapter?: string;
+  lecture_id?: string;
   types: string[];
   count_per_type: number;
 }

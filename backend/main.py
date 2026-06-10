@@ -11,7 +11,8 @@ from pydantic import BaseModel
 
 from db import get_client
 from ingestion import ingest_pdf, get_chapters, search_chunks
-from question_gen import generate_questions, grade_essay
+from lectures import get_lectures, get_lecture, search_chunks_for_lecture
+from question_gen import generate_questions_multi, grade_essay
 from spaced_repetition import update_sr_card, get_due_questions
 
 app = FastAPI(title="임용고시 퀴즈 플랫폼")
@@ -56,6 +57,12 @@ async def list_chapters(book_id: str):
     return get_chapters(book_id)
 
 
+@app.get("/books/{book_id}/lectures")
+async def list_lectures(book_id: str):
+    """교재의 강의 목록 (강의별 문제풀기용)"""
+    return get_lectures(book_id)
+
+
 @app.get("/chunks")
 async def list_chunks(book_id: str, chapter: str | None = None):
     query = db.table("chunks").select("id, chapter, content, page_start") \
@@ -72,41 +79,97 @@ async def list_chunks(book_id: str, chapter: str | None = None):
 
 class GenerateRequest(BaseModel):
     book_id: str
-    chapter: str
+    chapter: str | None = None       # 챕터별 생성
+    lecture_id: str | None = None    # 강의별 생성 (둘 중 하나)
     types: list[Literal["mcq", "fill_blank", "matching", "essay"]]
     count_per_type: int = 3
 
-@app.post("/questions/generate")
-async def generate(req: GenerateRequest):
-    """챕터 + 유형 → 문제 생성 (RAG 기반)"""
-    all_questions = []
 
-    for q_type in req.types:
-        # RAG 검색
-        query = f"{req.chapter} 핵심 개념 이론"
-        chunks = search_chunks(query, req.book_id, req.chapter, top_k=5)
+def _generate_and_store(book_id, label, lecture_id, chunks, types, count):
+    """공통 생성+저장 로직 — 전 유형 1회 생성 + 배치 insert. label은 questions.chapter에 기록."""
+    if not chunks:
+        return []
+    by_type = generate_questions_multi(chunks, types, count)
+    chunk_ids = [c["id"] for c in chunks]
 
-        if not chunks:
-            continue
-
-        # 문제 생성
-        raw_questions = generate_questions(chunks, q_type, req.count_per_type)
-
-        # DB 저장
-        for q in raw_questions:
-            res = db.table("questions").insert({
-                "book_id": req.book_id,
-                "chapter": req.chapter,
+    rows, meta = [], []
+    for q_type in types:
+        for q in by_type.get(q_type, []):
+            row = {
+                "book_id": book_id,
+                "chapter": label,
                 "type": q_type,
                 "difficulty": 3,
                 "question_data": q,
-                "source_chunk_ids": [c["id"] for c in chunks],
-            }).execute()
-            q["id"] = res.data[0]["id"]
-            q["type"] = q_type
-            all_questions.append(q)
+                "source_chunk_ids": chunk_ids,
+            }
+            if lecture_id:
+                row["lecture_id"] = lecture_id
+            rows.append(row)
+            meta.append((q_type, q))
+    if not rows:
+        return []
 
-    return {"questions": all_questions}
+    saved = db.table("questions").insert(rows).execute().data
+    all_questions = []
+    for (q_type, q), row in zip(meta, saved):
+        q["id"] = row["id"]
+        q["type"] = q_type
+        all_questions.append(q)
+    return all_questions
+
+
+@app.post("/questions/generate")
+async def generate(req: GenerateRequest):
+    """챕터 또는 강의 + 유형 → 문제 생성 (RAG 기반)"""
+    if req.lecture_id:
+        lecture = get_lecture(req.lecture_id)
+        if not lecture:
+            raise HTTPException(404, "강의를 찾을 수 없습니다.")
+        chunks = search_chunks_for_lecture(lecture, top_k=6)
+        label = f"{lecture['lecture_no']}강 {lecture['title']}"[:120]
+        questions = _generate_and_store(
+            req.book_id, label, req.lecture_id, chunks, req.types, req.count_per_type
+        )
+        return {"questions": questions}
+
+    if not req.chapter:
+        raise HTTPException(400, "chapter 또는 lecture_id가 필요합니다.")
+
+    query = f"{req.chapter} 핵심 개념 이론"
+    chunks = search_chunks(query, req.book_id, req.chapter, top_k=5)
+    questions = _generate_and_store(
+        req.book_id, req.chapter, None, chunks, req.types, req.count_per_type
+    )
+    return {"questions": questions}
+
+
+@app.get("/lectures/{lecture_id}/questions")
+async def lecture_questions(lecture_id: str):
+    """강의에 미리 만들어둔 문제(문제은행) 조회"""
+    res = db.table("questions").select("*") \
+        .eq("lecture_id", lecture_id) \
+        .order("created_at", desc=True).execute()
+    return res.data
+
+
+class PrebuildRequest(BaseModel):
+    types: list[Literal["mcq", "fill_blank", "matching", "essay"]] = \
+        ["mcq", "fill_blank", "matching", "essay"]
+    count_per_type: int = 3
+
+@app.post("/lectures/{lecture_id}/prebuild")
+async def prebuild_lecture(lecture_id: str, req: PrebuildRequest):
+    """강의 문제은행 미리 생성"""
+    lecture = get_lecture(lecture_id)
+    if not lecture:
+        raise HTTPException(404, "강의를 찾을 수 없습니다.")
+    chunks = search_chunks_for_lecture(lecture, top_k=6)
+    label = f"{lecture['lecture_no']}강 {lecture['title']}"[:120]
+    questions = _generate_and_store(
+        lecture["book_id"], label, lecture_id, chunks, req.types, req.count_per_type
+    )
+    return {"created": len(questions), "questions": questions}
 
 
 @app.get("/questions")
