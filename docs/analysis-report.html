@@ -217,7 +217,55 @@
   <li>인증 없음 — URL 아는 사람은 접속 가능. API 키는 서버에만 있어 유출 위험 낮음</li>
 </ul>
 
-<h2>5. 접속 정보</h2>
+<h2>5. 기술 선택 의사결정 기록</h2>
+<p>작업 중 실제로 검토했던 대안과 최종 선택의 근거.</p>
+
+<h3>5-1. 배포 위치 — Lightsail 기존 인스턴스 합승</h3>
+<table>
+  <tr><th>검토한 대안</th><th>탈락 이유</th></tr>
+  <tr><td>Tailscale (VPN)</td><td>설정은 가장 쉬우나 <b>설치된 본인 기기만</b> 접속 가능 — 아무 브라우저에서나 못 엶</td></tr>
+  <tr><td>집 공유기 포트포워딩</td><td>동적 IP로 주소 수시 변경, ISP 차단 가능성, 집 PC 상시 가동 필요</td></tr>
+  <tr><td>Vercel(프론트) + Lightsail(백엔드)</td><td>Vercel은 HTTPS 강제 → HTTP 백엔드 호출 시 <b>혼합 콘텐츠 차단</b>. 도메인이 없어 백엔드 HTTPS화 불가</td></tr>
+  <tr><td><b>✅ 전부 Lightsail + IP 접속</b></td><td>HTTP↔HTTP라 차단 없음, 고정 IP, 합승으로 <b>추가 비용 0원</b>, 도메인 불필요</td></tr>
+</table>
+
+<h3>5-2. 빌드 전략 — 로컬 빌드 + standalone 번들</h3>
+<table>
+  <tr><th>검토한 대안</th><th>탈락 이유</th></tr>
+  <tr><td>서버에서 npm install + build</td><td>1GB RAM에서 <b>OOM으로 SSH 마비 2회 실제 발생</b> — 스왑을 붙여도 재발</td></tr>
+  <tr><td>.next만 업로드 + 서버 npm install</td><td><code>next start</code>가 node_modules를 요구해 결국 npm install을 못 피함</td></tr>
+  <tr><td><b>✅ 로컬 standalone 빌드 → 3.5MB 업로드</b></td><td>Next.js가 필요 파일만 추려 자체 server.js 생성 → 서버는 <b>실행만</b></td></tr>
+</table>
+
+<h3>5-3. 프로세스 관리 — systemd (PM2 탈락)</h3>
+<ul>
+  <li>PM2는 <code>npm install -g</code> <b>설치 자체가 OOM 유발 작업</b>이었음</li>
+  <li>systemd는 OS 내장 — 설치 0, 부팅 자동시작, 크래시 5초 후 자동 재시작</li>
+  <li>기존 봇 3종도 systemd 운영 중 → 서버 관리 방식 일관</li>
+</ul>
+
+<h3>5-4. 포트 8001 / 스왑 2GB</h3>
+<ul>
+  <li>배포 전 점검에서 <b>schedulingBot이 8000 선점</b> 확인 → 8001 회피. 합승 시 포트 점유 확인이 먼저</li>
+  <li>스왑은 OOM 재발 방지 <b>보험</b> — 운영 측정 결과 사용량 0B, 순수 안전장치로 동작</li>
+</ul>
+
+<h3>5-5. 통합 생성 (유형별 호출 폐기)</h3>
+<table>
+  <tr><th>검토한 대안</th><th>평가</th></tr>
+  <tr><td>프롬프트 캐싱</td><td>토큰만 절감 — 호출 횟수(대기시간) 그대로</td></tr>
+  <tr><td>유형별 병렬 호출</td><td>속도만 개선 — 컨텍스트 중복 전송 그대로</td></tr>
+  <tr><td><b>✅ 전 유형 1회 통합 생성</b></td><td>토큰 + 속도 <b>동시 달성</b> — 컨텍스트 1회 전송, 4유형 1회 수신</td></tr>
+</table>
+
+<h3>5-6. 검색 관련 결정</h3>
+<ul>
+  <li><b><code>enable_indexscan=off</code></b> — 1차 시도 <code>ivfflat.probes</code>는 Supabase 권한 거부(42501). 청크가 수천 개라 정밀검색 비용 무시 가능, 수십만 규모 시 재검토</li>
+  <li><b>점진 윈도우 확장(±25→±60→±150)</b> — 고정 좁은 윈도우는 희소 구간에서 0건, 전권 검색은 타 PART 오답(강15 타일러 사례). 좁게 시작해 정확도 우선, 부족할 때만 확장</li>
+  <li><b>앵커 보간</b> — 1권은 오프셋이 뒤로 갈수록 커져(+1→+6) 고정값 불가. 실측 앵커 선형 보간으로 책별 패턴 흡수</li>
+</ul>
+
+<h2>6. 접속 정보</h2>
 <table>
   <tr><th>용도</th><th>주소</th></tr>
   <tr><td><b>문제 풀기 (메인)</b></td><td><a href="http://43.202.142.135:3000" style="color:var(--accent)">http://43.202.142.135:3000</a></td></tr>
