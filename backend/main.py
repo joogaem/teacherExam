@@ -2,6 +2,7 @@
 임용고시 퀴즈 플랫폼 — FastAPI 백엔드
 """
 
+import random
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -170,6 +171,106 @@ async def prebuild_lecture(lecture_id: str, req: PrebuildRequest):
         lecture["book_id"], label, lecture_id, chunks, req.types, req.count_per_type
     )
     return {"created": len(questions), "questions": questions}
+
+
+# ══════════════════════════════════════════
+# 강의 정복 게임 모드
+# ══════════════════════════════════════════
+
+# 스테이지 구성: 잡몹(객관식) → 중간보스(빈칸·짝맞추기) → 보스(서술형)
+GAME_STAGE_PLAN = [("mcq", 3), ("fill_blank", 2), ("matching", 1), ("essay", 1)]
+
+
+@app.get("/game/progress")
+async def game_progress(book_id: str):
+    """강의 목록 + 게임 진행도 (스테이지 맵용)"""
+    lectures = get_lectures(book_id)
+    ids = [l["id"] for l in lectures]
+    if not ids:
+        return []
+    res = db.table("lecture_progress").select("*").in_("lecture_id", ids).execute()
+    by_lec = {p["lecture_id"]: p for p in (res.data or [])}
+    return [{**l, "progress": by_lec.get(l["id"])} for l in lectures]
+
+
+@app.post("/game/lectures/{lecture_id}/start")
+async def game_start(lecture_id: str):
+    """스테이지 시작 — 문제은행에서 구성을 채우고 부족한 유형만 AI 생성으로 보충."""
+    lecture = get_lecture(lecture_id)
+    if not lecture:
+        raise HTTPException(404, "강의를 찾을 수 없습니다.")
+
+    bank = db.table("questions").select("*") \
+        .eq("lecture_id", lecture_id).execute().data or []
+    by_type: dict[str, list] = {}
+    for q in bank:
+        by_type.setdefault(q["type"], []).append(q)
+
+    picked_ids: dict[str, list[str]] = {}
+    missing: dict[str, int] = {}
+    for t, n in GAME_STAGE_PLAN:
+        have = by_type.get(t, [])
+        sample = random.sample(have, min(n, len(have)))  # 재도전마다 다른 문제
+        picked_ids[t] = [q["id"] for q in sample]
+        if len(have) < n:
+            missing[t] = n - len(have)
+
+    if missing:
+        chunks = search_chunks_for_lecture(lecture, top_k=6)
+        label = f"{lecture['lecture_no']}강 {lecture['title']}"[:120]
+        generated = _generate_and_store(
+            lecture["book_id"], label, lecture_id, chunks,
+            list(missing.keys()), missing,
+        )
+        for q in generated:
+            t = q["type"]
+            if len(picked_ids.get(t, [])) < dict(GAME_STAGE_PLAN)[t]:
+                picked_ids.setdefault(t, []).append(q["id"])
+
+    ordered_ids = [qid for t, _ in GAME_STAGE_PLAN for qid in picked_ids.get(t, [])]
+    if not ordered_ids:
+        raise HTTPException(400, "문제를 준비하지 못했어요. 잠시 후 다시 시도해주세요.")
+
+    sess = db.table("quiz_sessions").insert({
+        "book_id": lecture["book_id"],
+        "chapter": f"[게임] {lecture['lecture_no']}강 {lecture['title']}"[:120],
+        "total_questions": len(ordered_ids),
+    }).execute()
+
+    rows = db.table("questions").select("*").in_("id", ordered_ids).execute().data
+    by_id = {r["id"]: r for r in rows}
+    questions = [by_id[qid] for qid in ordered_ids if qid in by_id]
+
+    return {"session_id": sess.data[0]["id"], "questions": questions}
+
+
+class GameRecordRequest(BaseModel):
+    cleared: bool
+    score: int = 0
+    stars: int = 0
+    max_combo: int = 0
+
+@app.post("/game/lectures/{lecture_id}/record")
+async def game_record(lecture_id: str, req: GameRecordRequest):
+    """게임 결과 기록 — 최고 기록만 갱신, 시도 횟수 누적."""
+    res = db.table("lecture_progress").select("*") \
+        .eq("lecture_id", lecture_id).execute()
+    prev = res.data[0] if res.data else None
+
+    row = {
+        "lecture_id": lecture_id,
+        "cleared": (prev or {}).get("cleared", False) or req.cleared,
+        "stars": max((prev or {}).get("stars", 0), req.stars),
+        "best_score": max((prev or {}).get("best_score", 0), req.score),
+        "best_combo": max((prev or {}).get("best_combo", 0), req.max_combo),
+        "attempts": (prev or {}).get("attempts", 0) + 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if req.cleared and not (prev or {}).get("cleared"):
+        row["cleared_at"] = datetime.now(timezone.utc).isoformat()
+
+    db.table("lecture_progress").upsert(row, on_conflict="lecture_id").execute()
+    return row
 
 
 @app.get("/questions")

@@ -184,18 +184,22 @@ TYPE_SPECS = {
 def generate_questions_multi(
     context_chunks: list[dict],
     types: list[str],
-    count: int = 3,
+    count: int | dict[str, int] = 3,
 ) -> dict[str, list[dict]]:
-    """RAG 청크 → 선택한 전 유형을 1회 호출로 생성. {유형: [문제...]} 반환."""
+    """RAG 청크 → 선택한 전 유형을 1회 호출로 생성. {유형: [문제...]} 반환.
+    count: 공통 개수(int) 또는 유형별 개수 딕셔너리."""
     if not types:
         return {}
     context = "\n\n---\n\n".join(c["content"] for c in context_chunks)
 
+    def n_of(t: str) -> int:
+        return count.get(t, 1) if isinstance(count, dict) else count
+
     spec_lines, out_lines = [], []
     for t in types:
         desc, fmt = TYPE_SPECS[t]
-        spec_lines.append(f'- "{t}" {count}개: {desc}')
-        out_lines.append(f'  "{t}": [ {fmt}, ... {count}개 ]')
+        spec_lines.append(f'- "{t}" {n_of(t)}개: {desc}')
+        out_lines.append(f'  "{t}": [ {fmt}, ... {n_of(t)}개 ]')
 
     prompt = (
         "다음 교육학 교재 내용을 바탕으로 임용고시 수준 문제를 유형별로 만들어라.\n\n"
@@ -206,7 +210,8 @@ def generate_questions_multi(
     )
 
     # 유형·개수에 따라 출력 토큰 여유 확보
-    max_tokens = min(8192, 1200 + 700 * len(types) * count)
+    total_count = sum(n_of(t) for t in types)
+    max_tokens = min(8192, 1200 + 700 * total_count)
     msg = claude.messages.create(
         model=MODEL,
         max_tokens=max_tokens,

@@ -56,6 +56,17 @@ export const api = {
     complete: (sessionId: string) =>
       fetchAPI(`/sessions/${sessionId}/complete`, { method: "PATCH" }),
   },
+  game: {
+    progress: (bookId: string) => fetchAPI<GameLecture[]>(`/game/progress?book_id=${bookId}`),
+    start: (lectureId: string) =>
+      fetchAPI<{ session_id: string; questions: Question[] }>(
+        `/game/lectures/${lectureId}/start`, { method: "POST" }),
+    record: (lectureId: string, body: GameRecordRequest) =>
+      fetchAPI<LectureProgress>(`/game/lectures/${lectureId}/record`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+  },
   review: {
     queue: (bookId: string) => fetchAPI<Question[]>(`/review/${bookId}`),
   },
@@ -149,6 +160,26 @@ export interface AnswerResult {
   is_correct: boolean;
   score: number;
   feedback: string;
+}
+
+export interface LectureProgress {
+  lecture_id: string;
+  cleared: boolean;
+  stars: number;
+  best_score: number;
+  best_combo: number;
+  attempts: number;
+}
+
+export interface GameLecture extends Lecture {
+  progress: LectureProgress | null;
+}
+
+export interface GameRecordRequest {
+  cleared: boolean;
+  score: number;
+  stars: number;
+  max_combo: number;
 }
 
 export interface WeaknessRow {

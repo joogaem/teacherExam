@@ -69,6 +69,10 @@ export default function Home() {
                   className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">
                   퀴즈 시작
                 </Link>
+                <Link href={`/game?bookId=${book.id}`}
+                  className="px-4 py-2 rounded-lg bg-gray-900 text-amber-400 text-sm font-semibold hover:bg-gray-800">
+                  🏰 정복전
+                </Link>
                 <Link href={`/review?bookId=${book.id}`}
                   className="px-4 py-2 rounded-lg bg-purple-100 text-purple-700 text-sm font-semibold hover:bg-purple-200">
                   복습
