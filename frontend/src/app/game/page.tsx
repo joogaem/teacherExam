@@ -9,6 +9,7 @@ import MCQ from "@/components/quiz/MCQ";
 import FillBlank from "@/components/quiz/FillBlank";
 import Matching from "@/components/quiz/Matching";
 import Essay from "@/components/quiz/Essay";
+import Battle, { type BattleHandle } from "@/components/game/Battle";
 
 // 유형별 제한시간(초) / 기본 점수 / 라벨
 const TIMER: Record<string, number> = { mcq: 45, fill_blank: 60, matching: 90, essay: 300 };
@@ -37,6 +38,7 @@ function GamePage() {
   const [timedOut, setTimedOut] = useState(false);
   const [lastGain, setLastGain] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const battleRef = useRef<BattleHandle>(null);
 
   const loadProgress = useCallback(() => {
     if (bookId) api.game.progress(bookId).then(setLectures).catch(() => setLectures([]));
@@ -65,6 +67,13 @@ function GamePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, idx, questions]);
 
+  // 새 문제 = 새 몬스터 등장
+  useEffect(() => {
+    if (screen !== "play") return;
+    const q = questions[idx];
+    if (q) battleRef.current?.spawnEnemy(q.type);
+  }, [screen, idx, questions]);
+
   const startStage = async (lec: GameLecture) => {
     setCurrent(lec);
     setScreen("loading");
@@ -89,7 +98,9 @@ function GamePage() {
         stopTimer();
         api.game.record(current!.id, { cleared: false, score: finalScore, stars: 0, max_combo: maxCombo })
           .then(loadProgress).catch(() => {});
-        setScreen("gameover");
+        // 피격 → 쓰러짐 애니메이션을 보여준 뒤 게임오버 화면으로
+        setTimeout(() => battleRef.current?.defeat(), 500);
+        setTimeout(() => setScreen("gameover"), 1500);
       }
       return next;
     });
@@ -98,6 +109,7 @@ function GamePage() {
   const handleTimeout = () => {
     setTimedOut(true);
     setAnswered(true);
+    battleRef.current?.hurt();
     loseLife(score);
   };
 
@@ -120,11 +132,13 @@ function GamePage() {
       const gain = Math.floor((BASE_PT[q.type] ?? 100) * result.score * mult);
       setLastGain(gain);
       setScore(s => s + gain);
+      battleRef.current?.attack(true, gain);
     } else {
       // 부분 점수(짝맞추기·서술형)는 절반만 인정
       const gain = Math.floor((BASE_PT[q.type] ?? 100) * result.score * 0.5);
       setLastGain(gain);
       setScore(s => s + gain);
+      battleRef.current?.hurt();
       loseLife(score + gain);
     }
     return result;
@@ -313,6 +327,11 @@ function GamePage() {
             <div key={qq.id} className={`h-1.5 flex-1 rounded-full
               ${i < idx ? "bg-emerald-500" : i === idx ? (isBoss ? "bg-red-500" : "bg-amber-400") : "bg-gray-700"}`} />
           ))}
+        </div>
+
+        {/* 전투 씬 (Phaser) */}
+        <div className="bg-gray-800/60 rounded-2xl mb-3 overflow-hidden">
+          <Battle ref={battleRef} />
         </div>
 
         {/* 타이머 */}
