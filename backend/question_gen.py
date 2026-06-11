@@ -185,9 +185,11 @@ def generate_questions_multi(
     context_chunks: list[dict],
     types: list[str],
     count: int | dict[str, int] = 3,
+    style_examples: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """RAG 청크 → 선택한 전 유형을 1회 호출로 생성. {유형: [문제...]} 반환.
-    count: 공통 개수(int) 또는 유형별 개수 딕셔너리."""
+    count: 공통 개수(int) 또는 유형별 개수 딕셔너리.
+    style_examples: 실제 강사 출제 문항(형성평가) — 스타일·난이도 기준으로 주입."""
     if not types:
         return {}
     context = "\n\n---\n\n".join(c["content"] for c in context_chunks)
@@ -201,9 +203,17 @@ def generate_questions_multi(
         spec_lines.append(f'- "{t}" {n_of(t)}개: {desc}')
         out_lines.append(f'  "{t}": [ {fmt}, ... {n_of(t)}개 ]')
 
+    style_block = ""
+    if style_examples:
+        style_block = (
+            "[실제 강사 출제 문항 예시 — 이 스타일·난이도·묻는 방식을 따라라]\n"
+            + "\n".join(f"- {s}" for s in style_examples[:3]) + "\n\n"
+        )
+
     prompt = (
         "다음 교육학 교재 내용을 바탕으로 임용고시 수준 문제를 유형별로 만들어라.\n\n"
         f"[교재 내용]\n{context}\n\n"
+        + style_block +
         "[생성할 유형과 개수]\n" + "\n".join(spec_lines) + "\n\n"
         "[출력 형식 — 아래 키를 가진 JSON 객체 하나만 출력, 다른 텍스트 없이]\n"
         "{\n" + ",\n".join(out_lines) + "\n}\n"

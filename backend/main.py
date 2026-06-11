@@ -86,11 +86,21 @@ class GenerateRequest(BaseModel):
     count_per_type: int = 3
 
 
+def _style_examples(lecture_id, limit=3):
+    """강의의 형성평가(실제 강사 출제) 문항을 생성 스타일 예시로 사용."""
+    if not lecture_id:
+        return []
+    res = db.table("questions").select("question_data") \
+        .eq("lecture_id", lecture_id).like("chapter", "[형성평가]%") \
+        .limit(limit).execute()
+    return [r["question_data"].get("stem", "") for r in (res.data or []) if r["question_data"].get("stem")]
+
+
 def _generate_and_store(book_id, label, lecture_id, chunks, types, count):
     """공통 생성+저장 로직 — 전 유형 1회 생성 + 배치 insert. label은 questions.chapter에 기록."""
     if not chunks:
         return []
-    by_type = generate_questions_multi(chunks, types, count)
+    by_type = generate_questions_multi(chunks, types, count, style_examples=_style_examples(lecture_id))
     chunk_ids = [c["id"] for c in chunks]
 
     rows, meta = [], []
