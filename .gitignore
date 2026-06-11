@@ -21,3 +21,7 @@ out/
 # OS
 .DS_Store
 Thumbs.db
+
+# 배포 (SSH 키 절대 커밋 금지)
+*.pem
+standalone.tar.gz
