@@ -118,13 +118,17 @@ def main():
                 "page_end": pdf_end,
             })
 
-        if rows:
-            embeddings = embed_chunks([r["content"] for r in rows])
-            for r, emb in zip(rows, embeddings):
-                r["embedding"] = emb
-            db.table("chunks").insert(rows).execute()
+        try:
+            if rows:
+                embeddings = embed_chunks([r["content"] for r in rows])
+                for r, emb in zip(rows, embeddings):
+                    r["embedding"] = emb
+                db.table("chunks").insert(rows).execute()
+        except Exception as e:
+            print(f"⚠ 임베딩/저장 실패 {f.name}: {e}")
+            continue
         total += len(rows)
-        print(f"✔ {f.name[:50]:50s} → {len(rows)}청크")
+        print(f"✔ {f.name[:50]:50s} → {len(rows)}청크", flush=True)
 
     print(f"\n완료: 총 {total}청크 임포트")
 
