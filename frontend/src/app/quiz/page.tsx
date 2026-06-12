@@ -325,8 +325,8 @@ function QuizPage() {
           </div>
         </div>
 
-        {/* 문제 카드 */}
-        <div className="bg-white rounded-2xl shadow-sm p-6 mb-4">
+        {/* 문제 카드 — key로 문제마다 컴포넌트 상태 초기화 */}
+        <div key={q.id} className="bg-white rounded-2xl shadow-sm p-6 mb-4">
           <div className="flex items-center gap-2 mb-4">
             <span className="px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs font-semibold">
               {Q_TYPES.find(t => t.value === q.type)?.label}

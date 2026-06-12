@@ -129,10 +129,7 @@ def main():
         files = [f for f in files if "02" in f.name and "교육과정" in f.name][:1]
     print(f"대상 파일: {len(files)}개")
 
-    # 멱등: 기존 형성평가 임포트 삭제
-    if not test:
-        db.table("questions").delete().like("chapter", "[형성평가]%").execute()
-        print("기존 형성평가 임포트 삭제")
+    force = "--force" in sys.argv
 
     total = 0
     for f in files:
@@ -143,6 +140,16 @@ def main():
 
         m = re.search(r"형성평가\s*_?(\d+)", f.name)
         file_no = m.group(1) if m else "?"
+        label = f"[형성평가] {file_no} {subject}"[:120]
+
+        # 이어하기: 이미 임포트된 파일은 건너뜀 (--force 시 재임포트)
+        existing = db.table("questions").select("id").eq("chapter", label).limit(1).execute().data
+        if existing and not force:
+            print(f"↷ 건너뜀(이미 임포트됨): {f.name[:50]}")
+            continue
+        if existing:
+            db.table("questions").delete().eq("chapter", label).execute()
+
         try:
             items = parse_file(f)
         except Exception as e:
@@ -158,7 +165,7 @@ def main():
             lecture_id = find_lecture(lecture_map, book_id, pages[0]) if pages else None
             rows.append({
                 "book_id": book_id,
-                "chapter": f"[형성평가] {file_no} {subject}"[:120],
+                "chapter": label,
                 "type": "essay",
                 "difficulty": 3,
                 "lecture_id": lecture_id,
