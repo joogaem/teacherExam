@@ -11,7 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 claude = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-MODEL = "claude-sonnet-4-5"
+# 기본 Haiku(저비용). 품질 우선으로 바꾸려면 .env에 QUIZ_MODEL=claude-sonnet-4-5
+MODEL = os.environ.get("QUIZ_MODEL", "claude-haiku-4-5-20251001")
 
 # ── 유형별 프롬프트 ────────────────────────────────────────────
 
