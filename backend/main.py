@@ -353,9 +353,29 @@ async def submit_answer(req: AnswerRequest):
         feedback = q_data.get("explanation", "")
 
     elif q_type == "fill_blank":
-        user_text = req.user_answer.get("text", "").strip()
         correct_answers = [a.strip() for a in q_data.get("answers", [])]
-        is_correct = any(user_text == a or user_text in a for a in correct_answers)
+        # texts 배열(다중 빈칸) 우선, 없으면 text 단일값으로 하위호환
+        user_texts = req.user_answer.get("texts")
+        if user_texts is None:
+            single = req.user_answer.get("text", "").strip()
+            user_texts = [single] if single else []
+        user_texts = [t.strip() for t in user_texts]
+
+        if len(correct_answers) <= 1:
+            # 단일 정답: 입력값 중 하나라도 맞으면 정답
+            is_correct = any(
+                t == correct_answers[0] or t in correct_answers[0]
+                for t in user_texts
+            ) if correct_answers else False
+        else:
+            # 다중 빈칸: 각 빈칸 입력값이 대응하는 정답과 일치해야 함
+            if len(user_texts) != len(correct_answers):
+                is_correct = False
+            else:
+                is_correct = all(
+                    t == a or t in a
+                    for t, a in zip(user_texts, correct_answers)
+                )
         score = 1.0 if is_correct else 0.0
 
     elif q_type == "matching":
