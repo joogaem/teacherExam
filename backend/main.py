@@ -386,12 +386,23 @@ async def submit_answer(req: AnswerRequest):
         elif len(user_texts) == 1:
             is_correct = _blank_match(user_texts[0], correct_answers)
         else:
-            # 빈칸 여러 개: texts[i] → answers[i]
-            is_correct = all(
-                _blank_match(user_texts[i],
-                             correct_answers[i:i+1] if i < len(correct_answers) else correct_answers)
-                for i in range(len(user_texts))
-            )
+            # 빈칸 여러 개
+            # Claude가 "처방적, 역동적" 처럼 쉼표 튜플로 정답을 묶어 저장하는 경우 처리
+            u_norms = [_norm(t) for t in user_texts]
+
+            def _tuple_match(u_list: list[str], ans: str) -> bool:
+                parts = [_norm(p) for p in re.split(r',\s*', ans)]
+                if len(parts) != len(u_list):
+                    return False
+                return all(u == p or u in p or p in u for u, p in zip(u_list, parts))
+
+            is_correct = any(_tuple_match(u_norms, a) for a in correct_answers)
+            if not is_correct:
+                # 폴백: 각 빈칸을 전체 answers에서 개별 매칭
+                is_correct = all(
+                    _blank_match(user_texts[i], correct_answers)
+                    for i in range(len(user_texts))
+                )
         score = 1.0 if is_correct else 0.0
 
     elif q_type == "matching":
