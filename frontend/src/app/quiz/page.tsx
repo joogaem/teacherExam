@@ -41,13 +41,26 @@ function QuizPage() {
     }
   }, [bookId]);
 
+  // 브라우저/모바일 뒤로가기 → setup으로
+  useEffect(() => {
+    const onPop = () => setPhase("setup");
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   const selectedLecture = lectures.find(l => l.id === lectureId);
   const sessionLabel = mode === "lecture"
     ? (selectedLecture ? `${selectedLecture.lecture_no}강 ${selectedLecture.title}`.slice(0, 120) : "")
     : chapter;
   const canStart = mode === "lecture" ? !!lectureId : !!chapter;
 
+  const goSetup = () => {
+    setPhase("setup");
+    setScore({ correct: 0, total: 0 });
+  };
+
   const startWith = async (qids: string[]) => {
+    window.history.pushState(null, "");
     const sess = await api.sessions.start({
       book_id: bookId,
       chapter: sessionLabel,
@@ -293,7 +306,7 @@ function QuizPage() {
         </p>
         <div className="flex gap-3 mt-8">
           <button
-            onClick={() => { setPhase("setup"); setScore({ correct: 0, total: 0 }); }}
+            onClick={goSetup}
             className="flex-1 py-3 rounded-xl bg-blue-600 text-white font-semibold"
           >
             다시 풀기
@@ -317,6 +330,7 @@ function QuizPage() {
         {/* 상단 진행 표시 */}
         <div className="mb-6">
           <div className="flex justify-between text-sm text-gray-500 mb-2">
+            <button onClick={goSetup} className="text-gray-400 hover:text-gray-600">← 설정</button>
             <span>{q.chapter}</span>
             <span>{currentIdx + 1} / {questions.length}</span>
           </div>

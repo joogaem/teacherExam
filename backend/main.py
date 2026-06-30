@@ -2,7 +2,9 @@
 임용고시 퀴즈 플랫폼 — FastAPI 백엔드
 """
 
+import re
 import random
+import unicodedata
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -353,9 +355,45 @@ async def submit_answer(req: AnswerRequest):
         feedback = q_data.get("explanation", "")
 
     elif q_type == "fill_blank":
-        user_text = req.user_answer.get("text", "").strip()
+        def _norm(s: str) -> str:
+            """NFC 정규화 + 괄호 내용 제거 + 공백 정리"""
+            s = unicodedata.normalize("NFC", s.strip())
+            s = re.sub(r'\s*[\(（][^)）]*[\)）]\s*', '', s)
+            return s.strip()
+
+        def _blank_match(user: str, candidates: list[str]) -> bool:
+            """빈칸 하나의 답이 후보 목록 중 하나와 일치하는지 확인.
+            - 슬래시 구분 단일 문자열도 분해해서 비교
+            - 괄호 표기(숙의(熟議)) 제거 후 비교
+            - 대소문자·공백 무시"""
+            u = _norm(user)
+            if not u:
+                return False
+            for a in candidates:
+                # 슬래시로 묶인 경우 분해
+                for part in re.split(r'\s*/\s*', a):
+                    p = _norm(part)
+                    if u == p or u in p or p in u:
+                        return True
+            return False
+
         correct_answers = [a.strip() for a in q_data.get("answers", [])]
-        is_correct = any(user_text == a or user_text in a for a in correct_answers)
+        # texts 배열(빈칸별 독립 입력) 우선, 구버전 text 폴백
+        user_texts: list[str] = req.user_answer.get("texts") or []
+        if not user_texts:
+            t = req.user_answer.get("text", "").strip()
+            user_texts = [t] if t else []
+        if not user_texts:
+            is_correct = False
+        elif len(user_texts) == 1:
+            is_correct = _blank_match(user_texts[0], correct_answers)
+        else:
+            # 빈칸 여러 개: texts[i] → answers[i]
+            is_correct = all(
+                _blank_match(user_texts[i],
+                             correct_answers[i:i+1] if i < len(correct_answers) else correct_answers)
+                for i in range(len(user_texts))
+            )
         score = 1.0 if is_correct else 0.0
 
     elif q_type == "matching":

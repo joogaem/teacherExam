@@ -108,8 +108,20 @@ export default function Matching({ data, onSubmit }: Props) {
       {result && (
         <div className={`p-4 rounded-lg ${result.is_correct ? "bg-green-50 border border-green-300" : "bg-amber-50 border border-amber-300"}`}>
           <p className="font-semibold">
-            {result.is_correct ? "✅ 모두 정답!" : `${Math.round(result.score * 100)}점`}
+            {result.is_correct ? "✅ 모두 정답!" : `❌ ${Math.round(result.score * 100)}점`}
           </p>
+          {!result.is_correct && (
+            <div className="mt-3 text-sm space-y-1">
+              <p className="text-gray-500 font-medium">정답</p>
+              {data.pairs.map(([l, r]) => (
+                <p key={l} className="text-gray-700">
+                  <span className="font-medium">{data.left[l]}</span>
+                  <span className="text-gray-400 mx-1">→</span>
+                  {data.right[r]}
+                </p>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

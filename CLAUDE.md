@@ -18,6 +18,7 @@
 - 재배포: 백엔드는 서버에서 `git pull` + `sudo systemctl restart quiz-backend`.
   프론트는 로컬에서 standalone 빌드 → 3.5MB 번들 scp → 압축 해제 → restart
   (정확한 명령어: docs/analysis-report.md "재배포 절차" 섹션)
+- **프론트 배포 필수 단계**: `npm run build` 후 반드시 `.next/static` → `.next/standalone/.next/static` 복사 후 tar. 빠트리면 JS/CSS 전부 404.
 - SSH 키: `LightsailDefaultKey-ap-northeast-2.pem` (git 제외)
 
 ## 핵심 도메인 지식

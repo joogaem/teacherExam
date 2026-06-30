@@ -23,6 +23,17 @@ function GamePage() {
   const bookId = params.get("bookId") ?? "";
 
   const [screen, setScreen] = useState<"map" | "loading" | "play" | "clear" | "gameover">("map");
+
+  // 브라우저/모바일 뒤로가기 → 맵으로 돌아옴
+  useEffect(() => {
+    const onPop = () => {
+      stopTimer();
+      setScreen("map");
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [lectures, setLectures] = useState<GameLecture[]>([]);
   const [current, setCurrent] = useState<GameLecture | null>(null);
 
@@ -74,8 +85,15 @@ function GamePage() {
     if (q) battleRef.current?.spawnEnemy(q.type);
   }, [screen, idx, questions]);
 
+  const goMap = () => {
+    stopTimer();
+    setScreen("map");
+    window.history.pushState(null, "");
+  };
+
   const startStage = async (lec: GameLecture) => {
     setCurrent(lec);
+    window.history.pushState(null, "");
     setScreen("loading");
     try {
       const res = await api.game.start(lec.id);
@@ -225,7 +243,9 @@ function GamePage() {
             </div>
           ))}
 
-          <a href="/" className="block text-center text-sm text-gray-500 mt-8 hover:text-gray-300">← 홈으로</a>
+          <div className="flex justify-center gap-6 mt-8">
+            <a href="/" className="text-sm text-gray-500 hover:text-gray-300">← 홈으로</a>
+          </div>
         </div>
       </main>
     );
@@ -253,7 +273,7 @@ function GamePage() {
         <p className="text-5xl font-bold text-white my-4">{score.toLocaleString()}<span className="text-lg text-gray-400">점</span></p>
         <p className="text-gray-400 text-sm">최대 콤보 ×{maxCombo}</p>
         <div className="flex gap-3 mt-8">
-          <button onClick={() => setScreen("map")}
+          <button onClick={goMap}
             className="flex-1 py-3 rounded-xl bg-amber-500 text-gray-900 font-bold">
             다음 스테이지
           </button>
@@ -280,7 +300,7 @@ function GamePage() {
             className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold">
             재도전
           </button>
-          <button onClick={() => setScreen("map")}
+          <button onClick={goMap}
             className="flex-1 py-3 rounded-xl border border-gray-600 text-gray-300 font-semibold">
             맵으로
           </button>
@@ -302,6 +322,9 @@ function GamePage() {
         {/* HUD */}
         <div className="flex items-center justify-between mb-3 text-white">
           <div className="flex items-center gap-3">
+            <button onClick={goMap} className="text-gray-500 hover:text-gray-300 text-sm">
+              ← 맵
+            </button>
             <span className="text-xl tracking-wider">
               {"❤️".repeat(lives)}{"🖤".repeat(3 - lives)}
             </span>

@@ -8,14 +8,18 @@ interface Props {
 }
 
 export default function FillBlank({ data, onSubmit }: Props) {
-  const [text, setText] = useState("");
+  const blankCount = (data.template.match(/___/g) ?? []).length;
+  const [texts, setTexts] = useState<string[]>(() => Array(Math.max(1, blankCount)).fill(""));
   const [result, setResult] = useState<AnswerResult | null>(null);
   const [showHint, setShowHint] = useState(false);
 
   const handleSubmit = async () => {
-    const res = await onSubmit({ text });
+    const res = await onSubmit({ texts });
     setResult(res);
   };
+
+  const setBlank = (i: number, val: string) =>
+    setTexts(prev => prev.map((t, j) => (j === i ? val : t)));
 
   // ___ → input으로 치환
   const parts = data.template.split("___");
@@ -29,8 +33,8 @@ export default function FillBlank({ data, onSubmit }: Props) {
             {i < parts.length - 1 && (
               <input
                 key={`i-${i}`}
-                value={text}
-                onChange={e => setText(e.target.value)}
+                value={texts[i] ?? ""}
+                onChange={e => setBlank(i, e.target.value)}
                 disabled={!!result}
                 placeholder="답 입력"
                 className="border-b-2 border-blue-400 px-2 py-1 outline-none min-w-[100px] text-center"
@@ -55,7 +59,7 @@ export default function FillBlank({ data, onSubmit }: Props) {
       {!result && (
         <button
           onClick={handleSubmit}
-          disabled={!text.trim()}
+          disabled={texts.some(t => !t.trim())}
           className="w-full py-3 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-40"
         >
           제출
