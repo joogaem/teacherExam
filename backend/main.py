@@ -364,13 +364,11 @@ async def submit_answer(req: AnswerRequest):
         def _blank_match(user: str, candidates: list[str]) -> bool:
             """빈칸 하나의 답이 후보 목록 중 하나와 일치하는지 확인.
             - 슬래시 구분 단일 문자열도 분해해서 비교
-            - 괄호 표기(숙의(熟議)) 제거 후 비교
-            - 대소문자·공백 무시"""
+            - 괄호 표기(숙의(熟議)) 제거 후 비교"""
             u = _norm(user)
             if not u:
                 return False
             for a in candidates:
-                # 슬래시로 묶인 경우 분해
                 for part in re.split(r'\s*/\s*', a):
                     p = _norm(part)
                     if u == p or u in p or p in u:
