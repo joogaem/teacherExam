@@ -10,16 +10,17 @@
 - DB는 **공유 Supabase 프로젝트** — 모든 컴퓨터·서버가 같은 데이터를 봄. 코드만 git으로 동기화
 - `backend/.env` — API 키 (git 제외, 컴퓨터마다 수동 복사): SUPABASE_URL/SERVICE_KEY, ANTHROPIC_API_KEY, VOYAGE_API_KEY
 
-## 운영 서버 (AWS Lightsail)
+## 운영 서버 (AWS Lightsail) — 2026-07-08 구조 개편
 
-- 접속: http://43.202.142.135:3000 (프론트 :3000, 백엔드 :8001 — 8000은 기존 schedulingBot이 사용)
-- systemd 서비스: `quiz-backend`, `quiz-frontend` (자동 재시작)
-- **1GB RAM이라 서버에서 npm install/build 절대 금지** (OOM으로 SSH까지 마비됨)
-- 재배포: 백엔드는 서버에서 `git pull` + `sudo systemctl restart quiz-backend`.
-  프론트는 로컬에서 standalone 빌드 → 3.5MB 번들 scp → 압축 해제 → restart
-  (정확한 명령어: docs/analysis-report.md "재배포 절차" 섹션)
-- **프론트 배포 필수 단계**: `npm run build` 후 반드시 `.next/static` → `.next/standalone/.next/static` 복사 후 tar. 빠트리면 JS/CSS 전부 404.
-- SSH 키: `LightsailDefaultKey-ap-northeast-2.pem` (git 제외)
+- 접속: **http://43.202.142.135:8001 한 곳** (Basic Auth — 로그인 정보는 사용자 `Documents\lightsail-basic-auth.txt`). 구주소 :3000은 자동 리다이렉트.
+- 구조: nginx(:8001)가 정적 프론트(`/var/www/quiz`) 직접 서빙 + `/api/*`만 백엔드(127.0.0.1:8011, 내부 전용)로 프록시. **nginx가 `/api` 접두사를 벗겨 전달하므로 백엔드 라우트는 prefix 없이 그대로.**
+- systemd 서비스: `quiz-backend`만 (자동 재시작). ~~quiz-frontend~~ Next 서버는 폐지됨.
+- 재배포:
+  - 백엔드: 서버에서 `git pull` + `sudo systemctl restart quiz-backend`
+  - 프론트: 로컬에서 `NEXT_PUBLIC_API_URL=/api`로 `next build` → `out/`을 tar→scp→서버 `/var/www/quiz`에 전개(`--strip-components=1`). **서버 빌드·Next 서버·standalone 절차 전부 폐지.**
+- **1GB RAM이라 서버에서 npm install/build 절대 금지** (OOM으로 SSH까지 마비됨) — 정적 export 전환으로 서버 빌드 자체가 불필요해짐
+- schedulingBot은 2026-07-07 제거됨(포트 8000 비어 있음). pm2도 제거(전부 systemd).
+- SSH 키: `LightsailDefaultKey-ap-northeast-2.pem` (git 제외) 또는 PC의 `~/.ssh/id_ed25519` (2026-07-07 등록)
 
 ## 핵심 도메인 지식
 
