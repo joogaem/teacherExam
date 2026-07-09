@@ -513,13 +513,60 @@ async def complete_session(session_id: str):
 # 스페이스드 리피티션 (개념 단위 — PHASE1_SPEC §4)
 # ══════════════════════════════════════════
 
-DAILY_REVIEW_LIMIT = 15
+DAILY_REVIEW_LIMIT = 15   # 복습(이미 SR 기록 있는 개념) 상한
+NEW_DAILY_LIMIT = 10      # 신규(아직 한 번도 안 푼 개념) 상한 — §0-2 "복습 15 + 신규 10"
+
+
+def _select_all(table: str, columns: str, filter_fn=None) -> list[dict]:
+    """PostgREST 기본 응답 상한(보통 1000행)을 넘는 테이블 전량 조회.
+    (마이그레이션 스크립트에서 이 한계를 모르고 단일 select만 했다가 데이터 대부분이
+    누락된 적이 있어 — 커지는 테이블은 항상 이 헬퍼로 읽는다.)
+    filter_fn: 쿼리 빌더에 .eq()/.gte() 등을 추가로 걸고 싶을 때 사용, 예: lambda q: q.gte("x", 1)"""
+    out: list[dict] = []
+    start = 0
+    while True:
+        q = db.table(table).select(columns)
+        if filter_fn:
+            q = filter_fn(q)
+        res = q.range(start, start + 999).execute()
+        rows = res.data or []
+        out.extend(rows)
+        if len(rows) < 1000:
+            break
+        start += 1000
+    return out
+
+
+def _pick_new_concept_ids(limit: int) -> list[str]:
+    """아직 sr_concepts에 없는(한 번도 안 푼) 개념 중 활성 문항이 연결된 것을 신규 후보로.
+    기출 문항이 연결된 개념을 우선한다 — 기출 문제은행이 적재되어도 아무도 안 풀어봤다는
+    이유만으로 영원히 복습 큐에 안 나타나는 문제(부트스트랩 갭)를 해소."""
+    existing = {r["concept_id"] for r in _select_all("sr_concepts", "concept_id")}
+    links = _select_all("question_concepts", "concept_id, questions(source, active)")
+
+    exam_concepts: list[str] = []
+    other_concepts: list[str] = []
+    seen = set()
+    for r in links:
+        cid = r["concept_id"]
+        if cid in existing or cid in seen:
+            continue
+        q = r.get("questions")
+        if not q or not q.get("active"):
+            continue
+        seen.add(cid)
+        if q.get("source") == "past_exam":
+            exam_concepts.append(cid)
+        else:
+            other_concepts.append(cid)
+
+    return (exam_concepts + other_concepts)[:limit]
 
 
 def _recently_shown_question_ids(days: int = 30) -> set[str]:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    res = db.table("user_answers").select("question_id").gte("answered_at", cutoff).execute()
-    return {r["question_id"] for r in (res.data or [])}
+    rows = _select_all("user_answers", "question_id", lambda q: q.gte("answered_at", cutoff))
+    return {r["question_id"] for r in rows}
 
 
 def _pick_question_for_concept(concept_id: str, recent_qids: set[str], device: str) -> dict | None:
@@ -563,29 +610,43 @@ def _interleave_by_subject(cards: list[dict]) -> list[dict]:
 @app.get("/review/today")
 async def review_today(device: str = "desktop"):
     """오늘의 복습 — 개념 단위 통합 큐 (PHASE1_SPEC §4-2).
+    복습(이미 SR 기록 있는 개념, 상한 15) + 신규(한 번도 안 푼 개념, 상한 10)를 함께 채운다.
     응답에 due 총수(밀린 개수)를 포함하지 않는다 — §0-2 "빚 지표 노출 금지"."""
     due_ids = get_due_concept_ids(limit=DAILY_REVIEW_LIMIT * 3)
-    if not due_ids:
+    new_ids = _pick_new_concept_ids(NEW_DAILY_LIMIT * 2)
+    wanted = [(cid, False) for cid in due_ids] + [(cid, True) for cid in new_ids]
+    if not wanted:
         return {"cards": []}
 
-    concepts_res = db.table("concepts").select("id, name, subject").in_("id", due_ids).execute()
+    all_ids = [cid for cid, _ in wanted]
+    concepts_res = db.table("concepts").select("id, name, subject").in_("id", all_ids).execute()
     concepts_by_id = {c["id"]: c for c in (concepts_res.data or [])}
     recent_qids = _recently_shown_question_ids()
 
     cards = []
-    for cid in due_ids:
+    review_count = new_count = 0
+    for cid, is_new in wanted:
+        count = new_count if is_new else review_count
+        cap = NEW_DAILY_LIMIT if is_new else DAILY_REVIEW_LIMIT
+        if count >= cap:
+            continue
         concept = concepts_by_id.get(cid)
         if not concept:
             continue
         question = _pick_question_for_concept(cid, recent_qids, device)
-        if question:
-            cards.append({
-                "concept_id": cid,
-                "concept_name": concept["name"],
-                "subject": concept["subject"],
-                "question": question,
-            })
-        if len(cards) >= DAILY_REVIEW_LIMIT:
+        if not question:
+            continue
+        cards.append({
+            "concept_id": cid,
+            "concept_name": concept["name"],
+            "subject": concept["subject"],
+            "question": question,
+        })
+        if is_new:
+            new_count += 1
+        else:
+            review_count += 1
+        if review_count >= DAILY_REVIEW_LIMIT and new_count >= NEW_DAILY_LIMIT:
             break
 
     return {"cards": _interleave_by_subject(cards)}
@@ -622,7 +683,7 @@ async def get_review_queue(book_id: str, limit: int = 20):
 @app.get("/stats/cumulative")
 async def stats_cumulative():
     """누적 지표만 (§0-2 — 밀림/스트릭 등 감점형 지표는 절대 포함하지 않음)."""
-    answers = db.table("user_answers").select("id, question_id").execute().data or []
+    answers = _select_all("user_answers", "id, question_id")
     total_reviews = len(answers)
 
     qids = list({a["question_id"] for a in answers})

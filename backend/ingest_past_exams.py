@@ -99,16 +99,25 @@ PDF에서 텍스트로 추출한 것이라 수식·표·그림 일부가 깨져 
 """
 
 
-def structure_question(raw: str) -> dict | None:
+def structure_question(raw: str, retries: int = 2) -> dict | None:
+    """긴 서술형(특히 절차·기호가 많은 DB/알고리즘 문항)은 JSON 파싱이 가끔
+    실패하는 것이 실측으로 확인됨(모델 응답의 비결정성) — 짧게 재시도."""
     prompt = STRUCTURE_PROMPT.format(raw=raw[:3000], subjects=", ".join(SUBJECTS))
-    try:
-        msg = claude.messages.create(
-            model=MODEL, max_tokens=1536,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        obj = _parse_json(msg.content[0].text)
-    except Exception as e:
-        print(f"  ! 구조화 실패: {e}", file=sys.stderr)
+    obj = None
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            msg = claude.messages.create(
+                model=MODEL, max_tokens=1536,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            obj = _parse_json(msg.content[0].text)
+            break
+        except Exception as e:
+            last_err = e
+            obj = None
+    if obj is None:
+        print(f"  ! 구조화 실패({retries + 1}회 시도): {last_err}", file=sys.stderr)
         return None
     if not isinstance(obj, dict):
         return None
@@ -127,7 +136,7 @@ def main(path: str, year: int, paper: str, dry_run: bool):
     db = get_client()
     concepts_cache: dict[str, str] = {}
 
-    def get_or_create_concept(name: str) -> str | None:
+    def get_or_create_concept(name: str, subject: str) -> str | None:
         name = name.strip()
         if not name:
             return None
@@ -146,8 +155,9 @@ def main(path: str, year: int, paper: str, dry_run: bool):
         elif dry_run:
             cid = f"dry-{name}"
         else:
+            # subject는 SUBJECTS 목록(§1-4 enum) 중 하나 — 문항의 실제 분류를 그대로 사용
             row = db.table("concepts").insert(
-                {"name": name, "subject": "전공-기출", "exam_years": [year]}
+                {"name": name, "subject": subject, "exam_years": [year]}
             ).execute().data[0]
             cid = row["id"]
         concepts_cache[key] = cid
@@ -199,7 +209,7 @@ def main(path: str, year: int, paper: str, dry_run: bool):
 
         qc_rows = []
         for name in structured.get("key_concepts", []):
-            cid = get_or_create_concept(name)
+            cid = get_or_create_concept(name, subject)
             if cid:
                 qc_rows.append({"question_id": row["id"], "concept_id": cid})
         if qc_rows:
