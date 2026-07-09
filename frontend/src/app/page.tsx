@@ -98,6 +98,7 @@ export default function Home() {
       <div className="flex justify-center gap-6 pb-8 text-sm text-gray-400">
         <Link href="/books" className="hover:text-gray-600">교재 관리</Link>
         <Link href="/weakness" className="hover:text-gray-600">약점 보기</Link>
+        <Link href="/inbox" className="hover:text-gray-600">검수함</Link>
       </div>
     </main>
   );

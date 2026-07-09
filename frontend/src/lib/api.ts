@@ -79,6 +79,25 @@ export const api = {
   stats: {
     cumulative: () => fetchAPI<CumulativeStats>("/stats/cumulative"),
   },
+  inbox: {
+    list: (params: { q_type?: string; limit?: number; offset?: number }) => {
+      const sp = new URLSearchParams();
+      if (params.q_type) sp.set("q_type", params.q_type);
+      sp.set("limit", String(params.limit ?? 50));
+      sp.set("offset", String(params.offset ?? 0));
+      return fetchAPI<{ items: Question[]; total: number }>(`/inbox?${sp}`);
+    },
+    approve: (question_ids: string[]) =>
+      fetchAPI<{ approved: number }>("/inbox/approve", {
+        method: "POST",
+        body: JSON.stringify({ question_ids }),
+      }),
+    reject: (question_ids: string[]) =>
+      fetchAPI<{ rejected: number }>("/inbox/reject", {
+        method: "POST",
+        body: JSON.stringify({ question_ids }),
+      }),
+  },
 };
 
 // ── 타입 정의 ──────────────────────────────────────────────────

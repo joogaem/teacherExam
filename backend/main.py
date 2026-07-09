@@ -718,6 +718,46 @@ async def get_weakness():
     return res.data
 
 
+# ══════════════════════════════════════════
+# 검수함 (source='curriculum'의 active=false 카드 검토 — PHASE1_SPEC §5/§7)
+# ══════════════════════════════════════════
+# 주의: mcq/matching 레거시 문항도 active=false지만(§5-1, stage1 전용 의도적 비활성)
+# 이건 "검수 대기"가 아니라 설계상 상태라 검수함 대상이 아님 — source='curriculum'만 다룬다.
+
+@app.get("/inbox")
+async def list_inbox(q_type: str | None = None, limit: int = 50, offset: int = 0):
+    """검수 대기 카드 목록."""
+    query = db.table("questions").select("*", count="exact") \
+        .eq("source", "curriculum").eq("active", False)
+    if q_type:
+        query = query.eq("type", q_type)
+    res = query.order("chapter").range(offset, offset + limit - 1).execute()
+    return {"items": res.data, "total": res.count or 0}
+
+
+class InboxActionRequest(BaseModel):
+    question_ids: list[str]
+
+
+@app.post("/inbox/approve")
+async def approve_inbox(req: InboxActionRequest):
+    """선택한 카드를 활성화 + 검수 완료 처리 → 오늘의 복습 큐(신규)에 편입 가능해짐."""
+    if not req.question_ids:
+        return {"approved": 0}
+    db.table("questions").update({"active": True, "answer_verified": True}) \
+        .in_("id", req.question_ids).execute()
+    return {"approved": len(req.question_ids)}
+
+
+@app.post("/inbox/reject")
+async def reject_inbox(req: InboxActionRequest):
+    """선택한 카드를 삭제 (연결된 question_concepts는 FK cascade로 함께 제거됨)."""
+    if not req.question_ids:
+        return {"rejected": 0}
+    db.table("questions").delete().in_("id", req.question_ids).execute()
+    return {"rejected": len(req.question_ids)}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
