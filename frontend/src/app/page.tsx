@@ -1,93 +1,103 @@
 "use client";
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type Book } from "@/lib/api";
+import { api, type CumulativeStats } from "@/lib/api";
+
+const SEC_PER_CARD = 45;
 
 export default function Home() {
-  const [books, setBooks] = useState<Book[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [cardCount, setCardCount] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [stats, setStats] = useState<CumulativeStats | null>(null);
 
-  useEffect(() => {
-    api.books.list().then(setBooks).catch(console.error);
-  }, []);
-
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const title = prompt("교재 제목을 입력하세요:", file.name.replace(".pdf", ""));
-    if (!title) return;
-    setUploading(true);
-    setProgress("PDF 분석 중... (교재 크기에 따라 2~5분 소요)");
-    try {
-      const res = await api.books.upload(file, title);
-      setProgress(`완료! ${res.chapters.length}개 챕터 감지됨`);
-      const updated = await api.books.list();
-      setBooks(updated);
-    } catch (err) {
-      setProgress("업로드 실패: " + String(err));
-    } finally {
-      setUploading(false);
-      if (fileRef.current) fileRef.current.value = "";
-    }
+  const load = () => {
+    setLoadError(false);
+    setCardCount(null);
+    const device = window.innerWidth < 768 ? "mobile" : "desktop";
+    api.review.today(device)
+      .then(res => setCardCount(res.cards.length))
+      .catch(() => setLoadError(true));
   };
 
+  useEffect(load, []);
+
+  useEffect(() => {
+    if (cardCount === 0) {
+      api.stats.cumulative().then(setStats).catch(() => setStats(null));
+    }
+  }, [cardCount]);
+
+  const minutes = cardCount ? Math.max(1, Math.ceil((cardCount * SEC_PER_CARD) / 60)) : 0;
+
   return (
-    <main className="min-h-screen bg-gray-50 p-8">
-      <div className="max-w-3xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">📚 임용고시 퀴즈</h1>
-          <p className="text-gray-500 mt-1">교육학 교재 기반 AI 문제 생성 플랫폼</p>
-        </div>
+    <main className="min-h-screen bg-gray-50 flex flex-col">
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="max-w-md w-full">
+          {cardCount === null && !loadError && (
+            <p className="text-center text-gray-400">오늘의 복습을 준비하는 중...</p>
+          )}
 
-        <div className="bg-white rounded-2xl border-2 border-dashed border-blue-300 p-8 text-center mb-8 hover:border-blue-500 transition-colors">
-          <input ref={fileRef} type="file" accept=".pdf" onChange={handleUpload}
-            disabled={uploading} className="hidden" id="pdf-upload" />
-          <label htmlFor="pdf-upload" className="cursor-pointer">
-            <div className="text-4xl mb-2">📄</div>
-            <p className="font-semibold text-gray-700">
-              {uploading ? progress : "PDF 교재 업로드"}
-            </p>
-            <p className="text-sm text-gray-400 mt-1">클릭하여 파일 선택</p>
-          </label>
-        </div>
-
-        <div className="space-y-3">
-          {books.map(book => (
-            <div key={book.id} className="bg-white rounded-xl p-5 shadow-sm border border-gray-100 flex items-center justify-between">
-              <div>
-                <p className="font-semibold text-gray-900">{book.title}</p>
-                <p className="text-sm text-gray-400">{book.total_pages}페이지 · {new Date(book.created_at).toLocaleDateString()}</p>
-              </div>
-              <div className="flex gap-2">
-                <Link href={`/browse?bookId=${book.id}`}
-                  className="px-4 py-2 rounded-lg bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200">
-                  내용 보기
-                </Link>
-                <Link href={`/quiz?bookId=${book.id}`}
-                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">
-                  퀴즈 시작
-                </Link>
-                <Link href={`/game?bookId=${book.id}`}
-                  className="px-4 py-2 rounded-lg bg-gray-900 text-amber-400 text-sm font-semibold hover:bg-gray-800">
-                  🏰 정복전
-                </Link>
-                <Link href={`/review?bookId=${book.id}`}
-                  className="px-4 py-2 rounded-lg bg-purple-100 text-purple-700 text-sm font-semibold hover:bg-purple-200">
-                  복습
-                </Link>
-                <Link href={`/weakness?bookId=${book.id}`}
-                  className="px-4 py-2 rounded-lg bg-amber-100 text-amber-700 text-sm font-semibold hover:bg-amber-200">
-                  약점 분석
-                </Link>
-              </div>
+          {loadError && (
+            <div className="text-center">
+              <p className="text-gray-500 mb-4">불러오지 못했어요.</p>
+              <button
+                onClick={load}
+                className="px-5 py-2 rounded-lg bg-gray-800 text-white text-sm font-semibold"
+              >
+                다시 시도
+              </button>
             </div>
-          ))}
-          {books.length === 0 && !uploading && (
-            <p className="text-center text-gray-400 py-8">교재를 업로드하면 여기에 표시됩니다.</p>
+          )}
+
+          {cardCount !== null && cardCount > 0 && (
+            <Link
+              href="/review"
+              className="block w-full bg-white rounded-3xl shadow-sm border border-gray-100 p-10 text-center hover:shadow-md transition-shadow"
+            >
+              <div className="text-5xl mb-4">🔁</div>
+              <p className="text-2xl font-bold text-gray-900 mb-1">
+                오늘의 복습 {cardCount}개
+              </p>
+              <p className="text-gray-400 mb-6">약 {minutes}분</p>
+              <span className="inline-block px-8 py-3 rounded-xl bg-blue-600 text-white font-bold text-lg">
+                시작하기 →
+              </span>
+            </Link>
+          )}
+
+          {cardCount === 0 && (
+            <div className="text-center">
+              <div className="text-5xl mb-4">🎉</div>
+              <p className="text-xl font-bold text-gray-900 mb-1">오늘 분량 완료</p>
+              <p className="text-gray-400 mb-8">내일 또 만나요.</p>
+
+              {stats && (
+                <div className="flex justify-center gap-8 mb-8">
+                  <div>
+                    <p className="text-2xl font-bold text-blue-600">{stats.total_reviews}</p>
+                    <p className="text-xs text-gray-400 mt-1">누적 복습</p>
+                  </div>
+                  <div>
+                    <p className="text-2xl font-bold text-green-600">{stats.mastered_concepts}</p>
+                    <p className="text-xs text-gray-400 mt-1">정복한 개념</p>
+                  </div>
+                </div>
+              )}
+
+              <Link
+                href="/books"
+                className="inline-block px-6 py-2.5 rounded-xl border-2 border-gray-200 text-gray-600 font-semibold text-sm hover:border-gray-300"
+              >
+                더 풀기 (새 문제)
+              </Link>
+            </div>
           )}
         </div>
+      </div>
+
+      <div className="flex justify-center gap-6 pb-8 text-sm text-gray-400">
+        <Link href="/books" className="hover:text-gray-600">교재 관리</Link>
+        <Link href="/weakness" className="hover:text-gray-600">약점 보기</Link>
       </div>
     </main>
   );

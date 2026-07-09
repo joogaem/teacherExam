@@ -5,7 +5,8 @@
 import re
 import random
 import unicodedata
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -16,7 +17,7 @@ from db import get_client
 from ingestion import ingest_pdf, get_chapters, search_chunks
 from lectures import get_lectures, get_lecture, search_chunks_for_lecture
 from question_gen import generate_questions_multi, grade_essay
-from spaced_repetition import update_sr_card, get_due_questions
+from spaced_repetition import update_sr_concept, get_due_concept_ids, get_due_questions
 
 app = FastAPI(title="임용고시 퀴즈 플랫폼")
 
@@ -84,7 +85,7 @@ class GenerateRequest(BaseModel):
     book_id: str
     chapter: str | None = None       # 챕터별 생성
     lecture_id: str | None = None    # 강의별 생성 (둘 중 하나)
-    types: list[Literal["mcq", "fill_blank", "matching", "essay"]]
+    types: list[Literal["mcq", "fill_blank", "matching", "essay", "short_answer"]]
     count_per_type: int = 3
 
 
@@ -167,7 +168,7 @@ async def lecture_questions(lecture_id: str):
 
 
 class PrebuildRequest(BaseModel):
-    types: list[Literal["mcq", "fill_blank", "matching", "essay"]] = \
+    types: list[Literal["mcq", "fill_blank", "matching", "essay", "short_answer"]] = \
         ["mcq", "fill_blank", "matching", "essay"]
     count_per_type: int = 3
 
@@ -302,7 +303,7 @@ async def list_questions(book_id: str, chapter: str | None = None, q_type: str |
 # ══════════════════════════════════════════
 
 class StartSessionRequest(BaseModel):
-    book_id: str
+    book_id: str | None = None   # "오늘의 복습"은 여러 책/과목을 넘나들어 단일 book_id가 없을 수 있음
     chapter: str
     question_ids: list[str]
 
@@ -331,9 +332,65 @@ class AnswerRequest(BaseModel):
     user_answer: dict
     time_spent_sec: int = 0
 
+
+def _norm(s: str) -> str:
+    """NFC 정규화 + 괄호 내용 제거 + 공백 정리"""
+    s = unicodedata.normalize("NFC", s.strip())
+    s = re.sub(r'\s*[\(（][^)）]*[\)）]\s*', '', s)
+    return s.strip()
+
+
+def _blank_match(user: str, candidates: list[str], strict: bool = False) -> bool:
+    """빈칸 하나의 답이 후보 목록 중 하나와 일치하는지 확인 (PHASE1_SPEC §6-1 채점 엄격화).
+    - 완전 일치를 항상 우선 확인
+    - 부분 일치는 "사용자 답이 정답을 포함하는" 방향만 허용(사용자 답 ⊇ 정답).
+      반대 방향(정답이 사용자 답을 포함 — 예: 정답 "근접발달영역"에 사용자가 "발달"만
+      입력해도 정답 처리되던 구 버전 버그)은 금지.
+    - 부분 일치 시에도 사용자 답 길이가 정답의 60% 미만이면 무조건 오답 처리.
+    - strict=True(교과교육 카드 — 고시문 용어 시험)는 완전 일치만 인정.
+    - 슬래시 구분 복수 정답 문자열도 분해해서 비교."""
+    u = _norm(user)
+    if not u:
+        return False
+    for a in candidates:
+        for part in re.split(r'\s*/\s*', a):
+            p = _norm(part)
+            if not p:
+                continue
+            if u == p:
+                return True
+            if not strict and p in u and len(u) >= len(p) * 0.6:
+                return True
+    return False
+
+
+def _linked_concepts(question_id: str) -> list[dict]:
+    """이 문항에 연결된 개념 목록 [{id, name}] (question_concepts 조인)."""
+    res = db.table("question_concepts") \
+        .select("concept_id, concepts(id, name)") \
+        .eq("question_id", question_id).execute()
+    out = []
+    for r in (res.data or []):
+        c = r.get("concepts")
+        if c:
+            out.append({"id": c["id"], "name": c["name"]})
+    return out
+
+
+def _concept_verdicts_from_grading(linked: list[dict], graded: list[dict]) -> list[dict]:
+    """grade_essay가 개념명 기준으로 준 판정을 concept_id 기준으로 매핑."""
+    by_name = {c["name"]: c["id"] for c in linked}
+    out = []
+    for g in graded:
+        cid = by_name.get(g["name"])
+        if cid:
+            out.append({"concept_id": cid, "verdict": g["verdict"]})
+    return out
+
+
 @app.post("/sessions/answer")
 async def submit_answer(req: AnswerRequest):
-    """답변 제출 → 채점 → SR 업데이트"""
+    """답변 제출 → 채점 → 개념 단위 SR 업데이트"""
     # 문제 조회
     q_res = db.table("questions").select("*").eq("id", req.question_id).execute()
     if not q_res.data:
@@ -342,11 +399,14 @@ async def submit_answer(req: AnswerRequest):
     question = q_res.data[0]
     q_type = question["type"]
     q_data = question["question_data"]
+    is_curriculum = question.get("subject") == "교과교육"
 
     # 채점
     is_correct = False
     score = 0.0
     feedback = ""
+    concept_verdicts: list[dict] = []
+    linked = _linked_concepts(req.question_id)
 
     if q_type == "mcq":
         user_idx = req.user_answer.get("selected")
@@ -355,26 +415,6 @@ async def submit_answer(req: AnswerRequest):
         feedback = q_data.get("explanation", "")
 
     elif q_type == "fill_blank":
-        def _norm(s: str) -> str:
-            """NFC 정규화 + 괄호 내용 제거 + 공백 정리"""
-            s = unicodedata.normalize("NFC", s.strip())
-            s = re.sub(r'\s*[\(（][^)）]*[\)）]\s*', '', s)
-            return s.strip()
-
-        def _blank_match(user: str, candidates: list[str]) -> bool:
-            """빈칸 하나의 답이 후보 목록 중 하나와 일치하는지 확인.
-            - 슬래시 구분 단일 문자열도 분해해서 비교
-            - 괄호 표기(숙의(熟議)) 제거 후 비교"""
-            u = _norm(user)
-            if not u:
-                return False
-            for a in candidates:
-                for part in re.split(r'\s*/\s*', a):
-                    p = _norm(part)
-                    if u == p or u in p or p in u:
-                        return True
-            return False
-
         correct_answers = [a.strip() for a in q_data.get("answers", [])]
         # texts 배열(빈칸별 독립 입력) 우선, 구버전 text 폴백
         user_texts: list[str] = req.user_answer.get("texts") or []
@@ -384,7 +424,7 @@ async def submit_answer(req: AnswerRequest):
         if not user_texts:
             is_correct = False
         elif len(user_texts) == 1:
-            is_correct = _blank_match(user_texts[0], correct_answers)
+            is_correct = _blank_match(user_texts[0], correct_answers, strict=is_curriculum)
         else:
             # 빈칸 여러 개
             # Claude가 "처방적, 역동적" 처럼 쉼표 튜플로 정답을 묶어 저장하는 경우 처리
@@ -394,13 +434,18 @@ async def submit_answer(req: AnswerRequest):
                 parts = [_norm(p) for p in re.split(r',\s*', ans)]
                 if len(parts) != len(u_list):
                     return False
-                return all(u == p or u in p or p in u for u, p in zip(u_list, parts))
+                if is_curriculum:
+                    return all(u == p for u, p in zip(u_list, parts))
+                return all(
+                    u == p or (p in u and len(u) >= len(p) * 0.6)
+                    for u, p in zip(u_list, parts)
+                )
 
             is_correct = any(_tuple_match(u_norms, a) for a in correct_answers)
             if not is_correct:
                 # 폴백: 각 빈칸을 전체 answers에서 개별 매칭
                 is_correct = all(
-                    _blank_match(user_texts[i], correct_answers)
+                    _blank_match(user_texts[i], correct_answers, strict=is_curriculum)
                     for i in range(len(user_texts))
                 )
         score = 1.0 if is_correct else 0.0
@@ -413,11 +458,17 @@ async def submit_answer(req: AnswerRequest):
         score = len(correct_set & user_set) / max(len(correct_set), 1)
         is_correct = score == 1.0
 
-    elif q_type == "essay":
+    elif q_type in ("essay", "short_answer"):
         result = grade_essay(q_data, req.user_answer.get("text", ""))
         score = result["score"]
         feedback = result["feedback"]
         is_correct = score >= 0.6
+        concept_verdicts = _concept_verdicts_from_grading(linked, result["concepts"])
+
+    # mcq/fill_blank/matching은 개념별 세분화가 불가 — 문항 전체 정오답을 전 연결 개념에 적용
+    if not concept_verdicts and linked:
+        verdict = "hit" if is_correct else "missing"
+        concept_verdicts = [{"concept_id": c["id"], "verdict": verdict} for c in linked]
 
     # 답변 저장
     db.table("user_answers").insert({
@@ -428,10 +479,15 @@ async def submit_answer(req: AnswerRequest):
         "score": score,
         "feedback": feedback,
         "time_spent_sec": req.time_spent_sec,
+        "concept_results": concept_verdicts or None,
     }).execute()
 
-    # SR 카드 업데이트
-    update_sr_card(req.question_id, score)
+    # 개념 단위 SR 갱신 — missing/misconception이 하나라도 있으면 quality 상한 3으로 캡
+    # (점수가 높아도 간격이 크게 벌어지지 않게. PHASE1_SPEC §6-3)
+    has_gap = any(v["verdict"] in ("missing", "misconception") for v in concept_verdicts)
+    quality_cap = 3 if has_gap else None
+    for v in concept_verdicts:
+        update_sr_concept(v["concept_id"], score, quality_cap=quality_cap)
 
     # 세션 correct_count 업데이트
     if is_correct:
@@ -454,26 +510,147 @@ async def complete_session(session_id: str):
 
 
 # ══════════════════════════════════════════
-# 스페이스드 리피티션
+# 스페이스드 리피티션 (개념 단위 — PHASE1_SPEC §4)
 # ══════════════════════════════════════════
 
 @app.get("/review/{book_id}")
 async def get_review_queue(book_id: str, limit: int = 20):
-    """오늘 복습할 문제"""
+    """오늘 복습할 문제 (구 문항 단위 — 하위호환용, 신규 화면은 /review/today 사용)"""
     return get_due_questions(book_id, limit)
 
 
+DAILY_REVIEW_LIMIT = 15
+
+
+def _recently_shown_question_ids(days: int = 30) -> set[str]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    res = db.table("user_answers").select("question_id").gte("answered_at", cutoff).execute()
+    return {r["question_id"] for r in (res.data or [])}
+
+
+def _pick_question_for_concept(concept_id: str, recent_qids: set[str], device: str) -> dict | None:
+    """개념 1개에 대해 출제할 문항 선택.
+    우선순위: 기출 중 최근 미출제 → 그 외 미출제 → 아무거나(최후수단).
+    모바일이면 desk_only 문항 제외 — 후보가 하나도 없으면 개념을 건너뜀(다음 데스크톱 세션으로 이월).
+    ※ 이번 라운드는 '연결된 기존 활성 문항 중 선택'까지만 구현 — 문항이 아예 없는 개념을 위한
+       동적 생성 폴백(PHASE1_SPEC §4-2 ③)은 다음 라운드(기출 문제은행 적재와 함께) 과제로 남김."""
+    qres = db.table("question_concepts").select("question_id").eq("concept_id", concept_id).execute()
+    qids = [r["question_id"] for r in (qres.data or [])]
+    if not qids:
+        return None
+
+    candidates = db.table("questions").select("*") \
+        .in_("id", qids).eq("active", True).execute().data or []
+    if device == "mobile":
+        candidates = [q for q in candidates if not q.get("desk_only")]
+    if not candidates:
+        return None
+
+    unshown = [q for q in candidates if q["id"] not in recent_qids]
+    pool = unshown or candidates
+    exam_first = [q for q in pool if q.get("source") == "past_exam"]
+    return random.choice(exam_first or pool)
+
+
+def _interleave_by_subject(cards: list[dict]) -> list[dict]:
+    """같은 subject가 3연속 나오지 않도록 재배치."""
+    if len(cards) <= 2:
+        return cards
+    random.shuffle(cards)
+    for i in range(2, len(cards)):
+        if cards[i]["subject"] == cards[i - 1]["subject"] == cards[i - 2]["subject"]:
+            for j in range(i + 1, len(cards)):
+                if cards[j]["subject"] != cards[i - 1]["subject"]:
+                    cards[i], cards[j] = cards[j], cards[i]
+                    break
+    return cards
+
+
+@app.get("/review/today")
+async def review_today(device: str = "desktop"):
+    """오늘의 복습 — 개념 단위 통합 큐 (PHASE1_SPEC §4-2).
+    응답에 due 총수(밀린 개수)를 포함하지 않는다 — §0-2 "빚 지표 노출 금지"."""
+    due_ids = get_due_concept_ids(limit=DAILY_REVIEW_LIMIT * 3)
+    if not due_ids:
+        return {"cards": []}
+
+    concepts_res = db.table("concepts").select("id, name, subject").in_("id", due_ids).execute()
+    concepts_by_id = {c["id"]: c for c in (concepts_res.data or [])}
+    recent_qids = _recently_shown_question_ids()
+
+    cards = []
+    for cid in due_ids:
+        concept = concepts_by_id.get(cid)
+        if not concept:
+            continue
+        question = _pick_question_for_concept(cid, recent_qids, device)
+        if question:
+            cards.append({
+                "concept_id": cid,
+                "concept_name": concept["name"],
+                "subject": concept["subject"],
+                "question": question,
+            })
+        if len(cards) >= DAILY_REVIEW_LIMIT:
+            break
+
+    return {"cards": _interleave_by_subject(cards)}
+
+
+@app.post("/review/amnesty")
+async def review_amnesty():
+    """밀린 개념 복습을 오늘부터 14일에 걸쳐 균등 분산 재배정 (1회성, PHASE1_SPEC §4-3).
+    ease/interval/repetition은 보존 — next_review_at만 재배정."""
+    now = datetime.now(timezone.utc)
+    overdue = db.table("sr_concepts").select("id") \
+        .lte("next_review_at", now.isoformat()).execute().data or []
+    if not overdue:
+        return {"redistributed": 0}
+
+    random.shuffle(overdue)
+    for i, row in enumerate(overdue):
+        day_offset = i % 14
+        new_time = now + timedelta(days=day_offset, hours=random.uniform(0, 20))
+        db.table("sr_concepts").update({"next_review_at": new_time.isoformat()}) \
+            .eq("id", row["id"]).execute()
+
+    return {"redistributed": len(overdue)}
+
+
+@app.get("/stats/cumulative")
+async def stats_cumulative():
+    """누적 지표만 (§0-2 — 밀림/스트릭 등 감점형 지표는 절대 포함하지 않음)."""
+    answers = db.table("user_answers").select("id, question_id").execute().data or []
+    total_reviews = len(answers)
+
+    qids = list({a["question_id"] for a in answers})
+    subject_by_qid: dict[str, str] = {}
+    for i in range(0, len(qids), 500):
+        batch = qids[i:i + 500]
+        qres = db.table("questions").select("id, subject").in_("id", batch).execute()
+        for q in (qres.data or []):
+            subject_by_qid[q["id"]] = q.get("subject") or "미분류"
+
+    by_subject = Counter(subject_by_qid.get(a["question_id"], "미분류") for a in answers)
+    mastered = db.table("sr_concepts").select("id", count="exact").gte("repetition", 3).execute()
+
+    return {
+        "total_reviews": total_reviews,
+        "mastered_concepts": mastered.count or 0,
+        "by_subject": dict(by_subject),
+    }
+
+
 # ══════════════════════════════════════════
-# 약점 분석
+# 약점 분석 (개념 단위 — PHASE1_SPEC §1-7)
 # ══════════════════════════════════════════
 
-@app.get("/weakness/{book_id}")
-async def get_weakness(book_id: str):
-    """챕터별 약점 분석"""
-    res = db.table("weakness_view") \
-        .select("*") \
-        .eq("book_id", book_id) \
-        .order("avg_score_pct") \
+@app.get("/weakness")
+async def get_weakness():
+    """개념 단위 약점 분석 — 최근 30일 평균 점수가 낮은(또는 기록 없는) 개념 우선."""
+    res = db.table("weakness_view").select("*") \
+        .order("avg_score_pct_30d", desc=False, nullsfirst=True) \
+        .order("avg_score_pct", desc=False, nullsfirst=True) \
         .execute()
     return res.data
 

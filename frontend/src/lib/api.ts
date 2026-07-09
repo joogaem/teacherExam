@@ -69,9 +69,15 @@ export const api = {
   },
   review: {
     queue: (bookId: string) => fetchAPI<Question[]>(`/review/${bookId}`),
+    today: (device: "mobile" | "desktop") =>
+      fetchAPI<{ cards: ReviewCard[] }>(`/review/today?device=${device}`),
+    amnesty: () => fetchAPI<{ redistributed: number }>("/review/amnesty", { method: "POST" }),
   },
   weakness: {
-    get: (bookId: string) => fetchAPI<WeaknessRow[]>(`/weakness/${bookId}`),
+    get: () => fetchAPI<WeaknessRow[]>("/weakness"),
+  },
+  stats: {
+    cumulative: () => fetchAPI<CumulativeStats>("/stats/cumulative"),
   },
 };
 
@@ -89,9 +95,11 @@ export interface Question {
   id: string;
   book_id: string;
   chapter: string;
-  type: "mcq" | "fill_blank" | "matching" | "essay";
+  type: "mcq" | "fill_blank" | "matching" | "essay" | "short_answer";
   difficulty: number;
   question_data: MCQData | FillBlankData | MatchingData | EssayData;
+  desk_only?: boolean;
+  source?: "generated" | "past_exam" | "curriculum" | "manual";
 }
 
 export interface MCQData {
@@ -144,7 +152,7 @@ export interface GenerateRequest {
 }
 
 export interface StartSessionRequest {
-  book_id: string;
+  book_id?: string;
   chapter: string;
   question_ids: string[];
 }
@@ -183,9 +191,26 @@ export interface GameRecordRequest {
 }
 
 export interface WeaknessRow {
-  chapter: string;
-  type: string;
+  concept_id: string;
+  name: string;
+  subject: string;
   total_attempts: number;
   correct_count: number;
   avg_score_pct: number;
+  avg_score_pct_30d: number | null;
+  missing_count: number;
+  misconception_count: number;
+}
+
+export interface ReviewCard {
+  concept_id: string;
+  concept_name: string;
+  subject: string;
+  question: Question;
+}
+
+export interface CumulativeStats {
+  total_reviews: number;
+  mastered_concepts: number;
+  by_subject: Record<string, number>;
 }

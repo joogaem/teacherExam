@@ -105,7 +105,7 @@ PROMPTS = {
 """,
 }
 
-# ── 채점 프롬프트 ─────────────────────────────────────────────
+# ── 채점 프롬프트 (개념별 구조화 판정 — PHASE1_SPEC §6-2) ─────────
 
 GRADING_PROMPT = """
 [문제]
@@ -126,9 +126,14 @@ GRADING_PROMPT = """
 위 학생 답안을 채점하라.
 - score: 0.0 ~ 1.0 (핵심 개념 포함 비율 기준)
 - feedback: 구체적인 피드백 (100자 내외)
+- concepts: [핵심 개념] 각각에 대해 학생 답안에서의 반영 여부를 판정
+  - "hit": 개념을 정확히 포함/서술함
+  - "missing": 개념이 답안에 없음
+  - "misconception": 개념을 언급했으나 잘못 이해함
+  각 항목은 {{"name": 개념명(핵심 개념 목록의 표기 그대로), "verdict": "hit"|"missing"|"misconception", "evidence": 판단 근거 한 줄}}
 
-[출력 형식 — JSON만]
-{{"score": 0.8, "feedback": "피드백 내용"}}
+[출력 형식 — JSON만, 다른 텍스트 없이]
+{{"score": 0.8, "feedback": "...", "concepts": [{{"name": "...", "verdict": "hit", "evidence": "..."}}]}}
 """
 
 
@@ -178,6 +183,10 @@ TYPE_SPECS = {
     "essay": (
         "서술형(임용 수준, 400자 내외 예상답안). 핵심 개념 포함 여부로 채점 가능.",
         '{"stem":"문제","model_answer":"예시 답안","key_concepts":["개념1","개념2"],"rubric":"채점 기준"}',
+    ),
+    "short_answer": (
+        "단문 인출(1~3문장). 재인(mcq)을 졸업한 학습자용 — 핵심 개념이 정확히 들어가야 득점.",
+        '{"stem":"문제","model_answer":"1~3문장 예시 답안","key_concepts":["개념1","개념2"],"rubric":"채점 기준"}',
     ),
 }
 
@@ -234,20 +243,54 @@ def generate_questions_multi(
     return {t: (obj.get(t) or []) for t in types}
 
 
+_VALID_VERDICTS = {"hit", "missing", "misconception"}
+
+
 def grade_essay(question_data: dict, user_answer: str) -> dict:
-    """서술형 답안 채점 → {score, feedback}"""
+    """서술형/단문서술 답안 채점 → {score, feedback, concepts:[{name,verdict,evidence}]}.
+    Claude 응답의 키 부재·형식 이탈에 방어적으로 대응(PHASE1_SPEC §6-2,
+    구 버전에서 result["score"] 직접 접근 시 KeyError로 500 나던 문제 수정)."""
+    key_concepts = question_data.get("key_concepts", [])
     prompt = GRADING_PROMPT.format(
         stem=question_data["stem"],
         model_answer=question_data["model_answer"],
-        key_concepts=", ".join(question_data.get("key_concepts", [])),
+        key_concepts=", ".join(key_concepts),
         rubric=question_data.get("rubric", "핵심 개념 포함 여부"),
         user_answer=user_answer,
     )
 
     msg = claude.messages.create(
         model=MODEL,
-        max_tokens=512,
+        max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    return _parse_json(msg.content[0].text)
+    try:
+        result = _parse_json(msg.content[0].text)
+    except (json.JSONDecodeError, ValueError):
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+
+    try:
+        score = max(0.0, min(1.0, float(result.get("score", 0.0))))
+    except (TypeError, ValueError):
+        score = 0.0
+    feedback = result.get("feedback") or ""
+
+    concepts: list[dict] = []
+    for c in (result.get("concepts") or []):
+        if not isinstance(c, dict):
+            continue
+        name, verdict = c.get("name"), c.get("verdict")
+        if name and verdict in _VALID_VERDICTS:
+            concepts.append({"name": name, "verdict": verdict, "evidence": c.get("evidence", "")})
+
+    # 채점 응답이 일부 핵심 개념을 누락하면 보수적으로 missing 처리
+    # (누락된 개념이 "판정 안 됨"으로 조용히 사라져 SR에서 빠지는 것을 방지)
+    covered = {c["name"] for c in concepts}
+    for kc in key_concepts:
+        if kc not in covered:
+            concepts.append({"name": kc, "verdict": "missing", "evidence": "채점 응답에 미포함"})
+
+    return {"score": score, "feedback": feedback, "concepts": concepts}
