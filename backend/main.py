@@ -513,12 +513,6 @@ async def complete_session(session_id: str):
 # 스페이스드 리피티션 (개념 단위 — PHASE1_SPEC §4)
 # ══════════════════════════════════════════
 
-@app.get("/review/{book_id}")
-async def get_review_queue(book_id: str, limit: int = 20):
-    """오늘 복습할 문제 (구 문항 단위 — 하위호환용, 신규 화면은 /review/today 사용)"""
-    return get_due_questions(book_id, limit)
-
-
 DAILY_REVIEW_LIMIT = 15
 
 
@@ -615,6 +609,14 @@ async def review_amnesty():
             .eq("id", row["id"]).execute()
 
     return {"redistributed": len(overdue)}
+
+
+@app.get("/review/{book_id}")
+async def get_review_queue(book_id: str, limit: int = 20):
+    """오늘 복습할 문제 (구 문항 단위 — 하위호환용, 신규 화면은 /review/today 사용).
+    ※ /review/today 보다 반드시 뒤에 등록해야 함 — 앞에 두면 "today"를 book_id로
+    오인해 UUID 캐스팅 에러(PGRST 22P02)가 남 (실배포 중 실제로 발생해 발견됨)."""
+    return get_due_questions(book_id, limit)
 
 
 @app.get("/stats/cumulative")
