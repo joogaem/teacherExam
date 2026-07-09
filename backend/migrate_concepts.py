@@ -29,6 +29,24 @@ from question_gen import claude, MODEL, _parse_json
 
 BATCH_LLM = 15       # LLM 호출당 문항 수
 BATCH_DB = 100       # DB 배치 갱신 단위
+PAGE_SIZE = 1000     # PostgREST 기본 응답 상한(설정에 따라 다를 수 있으나 1000이 보수적 기본값)
+
+
+def _select_all(table: str, columns: str) -> list[dict]:
+    """PostgREST의 기본 최대 응답 행 수(보통 1000) 제한을 넘는 테이블을 전량 조회.
+    (마이그레이션 첫 실행에서 question_concepts 2460행을 단일 select로 읽다가
+    1000행에서 잘려 sr_cards 이관이 대부분 누락된 버그의 재발 방지용.)"""
+    db = get_client()
+    out: list[dict] = []
+    start = 0
+    while True:
+        res = db.table(table).select(columns).range(start, start + PAGE_SIZE - 1).execute()
+        rows = res.data or []
+        out.extend(rows)
+        if len(rows) < PAGE_SIZE:
+            break
+        start += PAGE_SIZE
+    return out
 
 
 def _question_context(q: dict) -> str:
@@ -91,7 +109,8 @@ def migrate_sr_cards(dry_run: bool):
     if not cards:
         return
 
-    qc = db.table("question_concepts").select("question_id, concept_id").execute().data or []
+    qc = _select_all("question_concepts", "question_id, concept_id")
+    print(f"  question_concepts 전량 조회: {len(qc)}행 (페이지네이션 적용)")
     by_question: dict[str, list[str]] = defaultdict(list)
     for r in qc:
         by_question[r["question_id"]].append(r["concept_id"])
