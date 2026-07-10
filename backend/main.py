@@ -539,13 +539,16 @@ def _select_all(table: str, columns: str, filter_fn=None) -> list[dict]:
 
 def _pick_new_concept_ids(limit: int) -> list[str]:
     """아직 sr_concepts에 없는(한 번도 안 푼) 개념 중 활성 문항이 연결된 것을 신규 후보로.
-    기출 문항이 연결된 개념을 우선한다 — 기출 문제은행이 적재되어도 아무도 안 풀어봤다는
-    이유만으로 영원히 복습 큐에 안 나타나는 문제(부트스트랩 갭)를 해소."""
+    한 번도 안 푼 개념이 영원히 복습 큐에 안 나타나는 부트스트랩 갭을 해소.
+
+    소스별로 번갈아 배정한다(라운드로빈) — 처음엔 기출만 우선했더니, 기출(105개)이
+    교육과정(승인분 55개)보다 훨씬 많아서 신규 슬롯이 매일 기출로만 채워지고 교육과정
+    카드가 영구적으로 밀리는 실제 버그가 있었음(2026-07-10 실사용 중 발견). 어느 한
+    소스가 다른 소스를 굶기지 않도록 그룹별로 순서를 섞어 배정."""
     existing = {r["concept_id"] for r in _select_all("sr_concepts", "concept_id")}
     links = _select_all("question_concepts", "concept_id, questions(source, active)")
 
-    exam_concepts: list[str] = []
-    other_concepts: list[str] = []
+    by_source: dict[str, list[str]] = {}
     seen = set()
     for r in links:
         cid = r["concept_id"]
@@ -555,12 +558,22 @@ def _pick_new_concept_ids(limit: int) -> list[str]:
         if not q or not q.get("active"):
             continue
         seen.add(cid)
-        if q.get("source") == "past_exam":
-            exam_concepts.append(cid)
-        else:
-            other_concepts.append(cid)
+        by_source.setdefault(q.get("source") or "generated", []).append(cid)
 
-    return (exam_concepts + other_concepts)[:limit]
+    for group in by_source.values():
+        random.shuffle(group)
+
+    merged: list[str] = []
+    groups = list(by_source.values())
+    i = 0
+    while len(merged) < limit and any(groups):
+        for g in groups:
+            if i < len(g):
+                merged.append(g[i])
+        i += 1
+        groups = [g for g in groups if i < len(g)]
+
+    return merged[:limit]
 
 
 def _recently_shown_question_ids(days: int = 30) -> set[str]:
