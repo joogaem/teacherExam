@@ -99,8 +99,35 @@ def _style_examples(lecture_id, limit=3):
     return [r["question_data"].get("stem", "") for r in (res.data or []) if r["question_data"].get("stem")]
 
 
+# 현재 교재(books)는 전부 교육학 — 전공은 기출·교육과정 스크립트로 별도 적재됨
+GENERATED_SUBJECT = "교육학"
+
+
+def _get_or_create_concept(name: str, subject: str) -> str | None:
+    name = (name or "").strip()
+    if not name:
+        return None
+    existing = db.table("concepts").select("id") \
+        .eq("name", name).eq("subject", subject).execute().data
+    if existing:
+        return existing[0]["id"]
+    return db.table("concepts").insert(
+        {"name": name, "subject": subject}
+    ).execute().data[0]["id"]
+
+
+def _extract_concept_names(q_type: str, q: dict) -> list[str]:
+    """생성된 문항에서 개념명 추출 — key_concepts 우선, 빈칸은 정답 자체가 개념어."""
+    names = q.get("key_concepts") or []
+    if not names and q_type == "fill_blank":
+        names = (q.get("answers") or [])[:1]
+    return [n for n in names[:2] if n and n.strip()]
+
+
 def _generate_and_store(book_id, label, lecture_id, chunks, types, count):
-    """공통 생성+저장 로직 — 전 유형 1회 생성 + 배치 insert. label은 questions.chapter에 기록."""
+    """공통 생성+저장 로직 — 전 유형 1회 생성 + 배치 insert. label은 questions.chapter에 기록.
+    개념 연결(question_concepts)까지 만들어야 오답이 약점 분석·SR 복습 큐에 반영된다
+    (초기 Phase 1에서 이 연결이 빠져 45문항이 집계 밖에 있었음 — 2026-07-15 수정)."""
     if not chunks:
         return []
     by_type = generate_questions_multi(chunks, types, count, style_examples=_style_examples(lecture_id))
@@ -116,6 +143,10 @@ def _generate_and_store(book_id, label, lecture_id, chunks, types, count):
                 "difficulty": 3,
                 "question_data": q,
                 "source_chunk_ids": chunk_ids,
+                "subject": GENERATED_SUBJECT,
+                # mcq/matching은 재인 훈련용(stage 1) — 즉석 퀴즈·게임에선 풀 수 있지만
+                # 복습 큐 기본 편입에서는 제외 (PHASE1_SPEC §5-1)
+                "active": q_type not in ("mcq", "matching"),
             }
             if lecture_id:
                 row["lecture_id"] = lecture_id
@@ -125,11 +156,20 @@ def _generate_and_store(book_id, label, lecture_id, chunks, types, count):
         return []
 
     saved = db.table("questions").insert(rows).execute().data
+    qc_rows = []
     all_questions = []
     for (q_type, q), row in zip(meta, saved):
         q["id"] = row["id"]
         q["type"] = q_type
         all_questions.append(q)
+        for name in _extract_concept_names(q_type, q):
+            cid = _get_or_create_concept(name, GENERATED_SUBJECT)
+            if cid:
+                qc_rows.append({"question_id": row["id"], "concept_id": cid})
+    if qc_rows:
+        db.table("question_concepts").upsert(
+            qc_rows, on_conflict="question_id,concept_id"
+        ).execute()
     return all_questions
 
 
