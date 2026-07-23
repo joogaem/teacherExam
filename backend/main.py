@@ -665,6 +665,22 @@ async def review_today(device: str = "desktop"):
     return {"cards": _interleave_by_subject(cards)}
 
 
+@app.get("/today-plan")
+async def today_plan():
+    """뽀모도로(focus-app) 연동용 — /review/today 큐를 블록 목록으로 변환 (PHASE1_SPEC §7).
+    개념 하나당 15분 블록 하나. focus-app이 실제 시각·휴식을 붙여 시간표로 조립한다."""
+    queue = await review_today()
+    return [
+        {
+            "block": c["concept_name"],
+            "minutes": 15,
+            "subject": c["subject"],
+            "question_ids": [c["question"]["id"]] if c.get("question") else [],
+        }
+        for c in queue["cards"]
+    ]
+
+
 @app.post("/review/amnesty")
 async def review_amnesty():
     """밀린 개념 복습을 오늘부터 14일에 걸쳐 균등 분산 재배정 (1회성, PHASE1_SPEC §4-3).
