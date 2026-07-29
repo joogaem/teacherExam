@@ -53,8 +53,18 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       }),
+    selfGrade: (answer_id: string, verdict: "ok" | "partial" | "no") =>
+      fetchAPI<{ ok: boolean; score?: number; is_correct?: boolean }>("/sessions/self-grade", {
+        method: "POST",
+        body: JSON.stringify({ answer_id, verdict }),
+      }),
     complete: (sessionId: string) =>
       fetchAPI(`/sessions/${sessionId}/complete`, { method: "PATCH" }),
+  },
+  learn: {
+    areas: () => fetchAPI<LearnArea[]>("/learn/areas"),
+    parts: (part: string) => fetchAPI<LearnPart[]>(`/learn/areas/${encodeURIComponent(part)}/parts`),
+    session: (lectureId: string) => fetchAPI<LearnSession>(`/learn/parts/${lectureId}`),
   },
   game: {
     progress: (bookId: string) => fetchAPI<GameLecture[]>(`/game/progress?book_id=${bookId}`),
@@ -184,9 +194,41 @@ export interface AnswerRequest {
 }
 
 export interface AnswerResult {
-  is_correct: boolean;
-  score: number;
+  is_correct: boolean | null;
+  score: number | null;
   feedback: string;
+  // AI 채점 불가 시(크레딧 소진 등) 자가 채점으로 전환하기 위한 필드
+  needs_self_grade?: boolean;
+  answer_id?: string;
+  model_answer?: string;
+  key_concepts?: string[];
+}
+
+export interface LearnArea {
+  part: string;
+  lectures: number;
+  done_lectures: number;
+  total_q: number;
+  answered_q: number;
+}
+
+export interface LearnPart {
+  lecture_id: string;
+  lecture_no: number;
+  title: string;
+  source: string;
+  total: number;
+  answered: number;
+  done: boolean;
+}
+
+export interface LearnSession {
+  lecture: { id: string; lecture_no: number; title: string; part: string | null };
+  questions: Question[];
+  answered: Record<string, { id: string; is_correct: boolean | null; score: number | null; feedback: string }>;
+  remaining: number;
+  lecture_total: number;
+  lecture_answered: number;
 }
 
 export interface LectureProgress {

@@ -147,13 +147,13 @@ function GamePage() {
       setCombo(newCombo);
       setMaxCombo(m => Math.max(m, newCombo));
       const mult = Math.min(2, 1 + 0.25 * (newCombo - 1));
-      const gain = Math.floor((BASE_PT[q.type] ?? 100) * result.score * mult);
+      const gain = Math.floor((BASE_PT[q.type] ?? 100) * (result.score ?? 0) * mult);
       setLastGain(gain);
       setScore(s => s + gain);
       battleRef.current?.attack(true, gain);
     } else {
       // 부분 점수(짝맞추기·서술형)는 절반만 인정
-      const gain = Math.floor((BASE_PT[q.type] ?? 100) * result.score * 0.5);
+      const gain = Math.floor((BASE_PT[q.type] ?? 100) * (result.score ?? 0) * 0.5);
       setLastGain(gain);
       setScore(s => s + gain);
       battleRef.current?.hurt();

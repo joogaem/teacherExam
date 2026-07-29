@@ -251,7 +251,12 @@ _VALID_VERDICTS = {"hit", "missing", "misconception"}
 def grade_essay(question_data: dict, user_answer: str) -> dict:
     """서술형/단문서술 답안 채점 → {score, feedback, concepts:[{name,verdict,evidence}]}.
     Claude 응답의 키 부재·형식 이탈에 방어적으로 대응(PHASE1_SPEC §6-2,
-    구 버전에서 result["score"] 직접 접근 시 KeyError로 500 나던 문제 수정)."""
+    구 버전에서 result["score"] 직접 접근 시 KeyError로 500 나던 문제 수정).
+
+    LLM을 쓸 수 없을 때(크레딧 소진·네트워크 장애 등)는 예외를 던지지 않고
+    {"unavailable": True}를 반환한다 — 호출부가 자가 채점으로 전환할 수 있게.
+    (2026-07-18 크레딧 소진으로 서술형 제출이 전부 500 나던 것을 계기로 추가.
+    강의 문제은행 668개 중 475개가 서술형이라 이 경로가 죽으면 앱이 사실상 멈춤.)"""
     key_concepts = question_data.get("key_concepts", [])
     prompt = GRADING_PROMPT.format(
         stem=question_data["stem"],
@@ -261,11 +266,19 @@ def grade_essay(question_data: dict, user_answer: str) -> dict:
         user_answer=user_answer,
     )
 
-    msg = claude.messages.create(
-        model=MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        msg = claude.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as e:
+        return {
+            "unavailable": True,
+            "score": None,
+            "feedback": f"AI 채점을 지금 쓸 수 없어요({type(e).__name__}). 모범답안과 비교해 직접 판정해주세요.",
+            "concepts": [],
+        }
 
     try:
         result = _parse_json(msg.content[0].text)

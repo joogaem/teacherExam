@@ -498,20 +498,28 @@ async def submit_answer(req: AnswerRequest):
         score = len(correct_set & user_set) / max(len(correct_set), 1)
         is_correct = score == 1.0
 
-    elif q_type in ("essay", "short_answer"):
+    needs_self_grade = False
+
+    if q_type in ("essay", "short_answer"):
         result = grade_essay(q_data, req.user_answer.get("text", ""))
-        score = result["score"]
         feedback = result["feedback"]
-        is_correct = score >= 0.6
-        concept_verdicts = _concept_verdicts_from_grading(linked, result["concepts"])
+        if result.get("unavailable"):
+            # LLM 채점 불가 → 답안은 저장하되 점수 미정으로 두고 자가 채점으로 넘긴다.
+            needs_self_grade = True
+            score = None
+            is_correct = None
+        else:
+            score = result["score"]
+            is_correct = score >= 0.6
+            concept_verdicts = _concept_verdicts_from_grading(linked, result["concepts"])
 
     # mcq/fill_blank/matching은 개념별 세분화가 불가 — 문항 전체 정오답을 전 연결 개념에 적용
-    if not concept_verdicts and linked:
+    if not concept_verdicts and linked and not needs_self_grade:
         verdict = "hit" if is_correct else "missing"
         concept_verdicts = [{"concept_id": c["id"], "verdict": verdict} for c in linked]
 
     # 답변 저장
-    db.table("user_answers").insert({
+    saved = db.table("user_answers").insert({
         "session_id": req.session_id,
         "question_id": req.question_id,
         "user_answer": req.user_answer,
@@ -520,7 +528,7 @@ async def submit_answer(req: AnswerRequest):
         "feedback": feedback,
         "time_spent_sec": req.time_spent_sec,
         "concept_results": concept_verdicts or None,
-    }).execute()
+    }).execute().data
 
     # 개념 단위 SR 갱신 — missing/misconception이 하나라도 있으면 quality 상한 3으로 캡
     # (점수가 높아도 간격이 크게 벌어지지 않게. PHASE1_SPEC §6-3)
@@ -533,11 +541,58 @@ async def submit_answer(req: AnswerRequest):
     if is_correct:
         db.rpc("increment_correct_count", {"session_id": req.session_id}).execute()
 
-    return {
+    resp = {
         "is_correct": is_correct,
         "score": score,
         "feedback": feedback,
     }
+    if needs_self_grade:
+        # 프론트가 모범답안을 보여주고 자가 채점 버튼을 띄울 수 있게 필요한 것만 실어보냄
+        resp.update({
+            "needs_self_grade": True,
+            "answer_id": (saved[0]["id"] if saved else None),
+            "model_answer": q_data.get("model_answer", ""),
+            "key_concepts": q_data.get("key_concepts", []),
+        })
+    return resp
+
+
+class SelfGradeRequest(BaseModel):
+    answer_id: str
+    verdict: Literal["ok", "partial", "no"]
+
+
+SELF_GRADE_SCORE = {"ok": 1.0, "partial": 0.6, "no": 0.0}
+
+
+@app.post("/sessions/self-grade")
+async def self_grade(req: SelfGradeRequest):
+    """AI 채점을 쓸 수 없을 때 사용자가 모범답안과 대조해 직접 판정.
+    Anki류의 자기평가와 같은 방식이며, 서술형은 '내 답과 모범답안의 차이를 스스로 짚는' 것
+    자체가 유효한 훈련이라 대체재로도 타당하다. 판정 후에야 SR이 갱신된다."""
+    ans = db.table("user_answers").select("id, question_id, score") \
+        .eq("id", req.answer_id).execute().data
+    if not ans:
+        raise HTTPException(404, "답안을 찾을 수 없습니다.")
+    if ans[0]["score"] is not None:
+        return {"ok": True, "already_graded": True}
+
+    score = SELF_GRADE_SCORE[req.verdict]
+    is_correct = score >= 0.6
+    linked = _linked_concepts(ans[0]["question_id"])
+    verdict = "hit" if is_correct else "missing"
+    concept_verdicts = [{"concept_id": c["id"], "verdict": verdict} for c in linked]
+
+    db.table("user_answers").update({
+        "score": score,
+        "is_correct": is_correct,
+        "concept_results": concept_verdicts or None,
+    }).eq("id", req.answer_id).execute()
+
+    for v in concept_verdicts:
+        update_sr_concept(v["concept_id"], score, quality_cap=None if is_correct else 3)
+
+    return {"ok": True, "score": score, "is_correct": is_correct}
 
 
 @app.patch("/sessions/{session_id}/complete")
@@ -785,6 +840,131 @@ async def get_weakness():
         .order("avg_score_pct", desc=False, nullsfirst=True) \
         .execute()
     return res.data
+
+
+# ══════════════════════════════════════════
+# 파트별 학습 모드 (교육학 — PHASE1_SPEC §9)
+# ══════════════════════════════════════════
+# 코스 = 대영역(lectures.part), 파트 = 강의(lecture).
+# 진행도는 별도 테이블 없이 user_answers로 계산한다(lecture_progress는 게임 모드 전용).
+# active=false인 mcq/matching도 여기서는 포함 — 학습 모드가 곧 stage 1이고,
+# active 플래그의 의미는 "복습 큐 편입 여부"이지 "사용 가능 여부"가 아니다(§9-3).
+
+# 쉬운 유형 → 어려운 유형 순서로 제시 (재인에서 회상으로)
+LEARN_TYPE_ORDER = {"mcq": 0, "matching": 1, "fill_blank": 2, "short_answer": 3, "essay": 4}
+
+
+def _answered_question_ids() -> set[str]:
+    return {r["question_id"] for r in _select_all("user_answers", "question_id")}
+
+
+def _learn_lectures() -> list[dict]:
+    """강의 + 그 강의에 연결된 문항 id 목록."""
+    lectures = get_lectures()
+    qs = _select_all("questions", "id, lecture_id")
+    by_lec: dict[str, list[str]] = {}
+    for q in qs:
+        if q.get("lecture_id"):
+            by_lec.setdefault(q["lecture_id"], []).append(q["id"])
+    for l in lectures:
+        l["question_ids"] = by_lec.get(l["id"], [])
+    return lectures
+
+
+@app.get("/learn/areas")
+async def learn_areas():
+    """대영역(코스) 목록 + 진행률. 진행 중인 영역이 먼저 오도록 정렬."""
+    lectures = _learn_lectures()
+    answered = _answered_question_ids()
+
+    areas: dict[str, dict] = {}
+    for l in lectures:
+        qids = l["question_ids"]
+        if not qids:
+            continue  # 문제가 없는 강의는 학습 단위가 안 되므로 제외
+        key = l.get("part") or "기타"
+        a = areas.setdefault(key, {"part": key, "lectures": 0, "done_lectures": 0,
+                                    "total_q": 0, "answered_q": 0})
+        done_here = sum(1 for q in qids if q in answered)
+        a["lectures"] += 1
+        a["total_q"] += len(qids)
+        a["answered_q"] += done_here
+        if done_here == len(qids):
+            a["done_lectures"] += 1
+
+    out = list(areas.values())
+    # 진행 중(일부만 푼) 영역 → 미착수 → 완료 순
+    def rank(a):
+        if a["done_lectures"] == a["lectures"]:
+            return 2
+        return 0 if a["answered_q"] > 0 else 1
+    out.sort(key=lambda a: (rank(a), a["part"]))
+    return out
+
+
+@app.get("/learn/areas/{part}/parts")
+async def learn_parts(part: str):
+    """한 대영역의 파트(강의) 목록 + 파트별 진행."""
+    answered = _answered_question_ids()
+    out = []
+    for l in _learn_lectures():
+        if (l.get("part") or "기타") != part or not l["question_ids"]:
+            continue
+        qids = l["question_ids"]
+        done = sum(1 for q in qids if q in answered)
+        out.append({
+            "lecture_id": l["id"], "lecture_no": l["lecture_no"], "title": l["title"],
+            "source": l.get("source"), "total": len(qids), "answered": done,
+            "done": done == len(qids),
+        })
+    out.sort(key=lambda x: (x["source"] != "main", x["lecture_no"] or 0))
+    return out
+
+
+LEARN_SESSION_SIZE = 8   # 한 번에 내주는 최대 문항 수
+
+
+@app.get("/learn/parts/{lecture_id}")
+async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE):
+    """파트 하나 = 그 강의의 문제 세트(쉬운 유형 → 어려운 유형).
+
+    강의마다 문항 수 편차가 크다(1~23개). 23문항을 한 번에 내주면 사용자가 지적한
+    '한 화면에 너무 많다' 문제가 그대로 재현되므로, **미답 문항 위주로 최대 limit개**만
+    내주고 나머지는 remaining으로 알린다(§9-2, §0-2 "끝낼 수 있는 크기")."""
+    lecture = get_lecture(lecture_id)
+    if not lecture:
+        raise HTTPException(404, "강의를 찾을 수 없습니다.")
+
+    all_q = db.table("questions").select("*").eq("lecture_id", lecture_id).execute().data or []
+    all_q.sort(key=lambda q: (LEARN_TYPE_ORDER.get(q["type"], 9), q["created_at"]))
+
+    qids = [q["id"] for q in all_q]
+    prev: dict[str, dict] = {}
+    if qids:
+        rows = db.table("user_answers") \
+            .select("id, question_id, is_correct, score, feedback, user_answer, answered_at") \
+            .in_("question_id", qids).order("answered_at").execute().data or []
+        for r in rows:      # 같은 문항을 여러 번 풀었으면 최신 답안만 남김
+            prev[r["question_id"]] = r
+
+    unanswered = [q for q in all_q if q["id"] not in prev]
+    if unanswered:
+        questions = unanswered[:limit]
+        remaining = len(unanswered) - len(questions)
+    else:
+        # 이미 다 푼 강의 → 복습으로 전체를 다시 보여준다
+        questions = all_q[:limit]
+        remaining = 0
+
+    return {
+        "lecture": {"id": lecture["id"], "lecture_no": lecture["lecture_no"],
+                     "title": lecture["title"], "part": lecture.get("part")},
+        "questions": questions,
+        "answered": {q["id"]: prev[q["id"]] for q in questions if q["id"] in prev},
+        "remaining": remaining,
+        "lecture_total": len(all_q),
+        "lecture_answered": len(prev),
+    }
 
 
 # ══════════════════════════════════════════
