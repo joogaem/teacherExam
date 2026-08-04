@@ -180,12 +180,20 @@ def insert_card(db, course: str, concept_name: str, card_type: str, question_dat
     return row["id"]
 
 
-def main(dry_run: bool):
+def main(dry_run: bool, only: list[str] | None = None):
     lines = load_lines()
     db = get_client()
     total_cards = 0
 
-    for course, prefix, start, end, area_map in COURSES:
+    courses = COURSES
+    if only:
+        courses = [c for c in COURSES if any(k in c[0] for k in only)]
+        if not courses:
+            print(f"--only={only} 와 일치하는 과목 없음. 가능한 값: {[c[0] for c in COURSES]}")
+            return
+        print(f"대상 과목만 처리: {[c[0] for c in courses]}")
+
+    for course, prefix, start, end, area_map in courses:
         text = course_text(lines, start, end)
         print(f"\n=== {course} ({prefix}) ===")
 
@@ -259,5 +267,10 @@ def main(dry_run: bool):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--only", nargs="+", metavar="키워드",
+        help="특정 과목만 처리 (과목명 부분 일치). 예: --only 고등학교 '데이터 과학'. "
+             "이미 승인된 과목을 중복 생성하지 않으려면 반드시 지정할 것.",
+    )
     args = parser.parse_args()
-    main(args.dry_run)
+    main(args.dry_run, args.only)
