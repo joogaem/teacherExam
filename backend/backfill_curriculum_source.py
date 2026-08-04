@@ -118,7 +118,9 @@ def main(dry_run: bool):
                 if area and (course, area) in by_area:
                     src = by_area[(course, area)]
                     break
-            if "교수·학습 및 평가" in n and course in by_course:
+            # 개념명은 ingest_curriculum이 "{과목}-교수학습및평가" 형태로 만든다
+            # (가운뎃점·공백 없음). 표기 흔들림에 대비해 둘 다 허용.
+            if ("교수학습및평가" in n or "교수·학습 및 평가" in n) and course in by_course:
                 src = by_course[course]
                 break
 
