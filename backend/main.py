@@ -873,7 +873,11 @@ def _learn_lectures() -> list[dict]:
 
 @app.get("/learn/areas")
 async def learn_areas():
-    """대영역(코스) 목록 + 진행률. 진행 중인 영역이 먼저 오도록 정렬."""
+    """코스 목록 + 진행률.
+    두 트랙을 함께 돌려준다:
+      - kind='lecture'   : 교육학 대영역(PART) — 파트는 강의
+      - kind='curriculum': 교과교육학 과목 — 중간 단계 없이 바로 8문항 세션
+    진행 중인 코스가 먼저 오도록 정렬."""
     lectures = _learn_lectures()
     answered = _answered_question_ids()
 
@@ -883,7 +887,8 @@ async def learn_areas():
         if not qids:
             continue  # 문제가 없는 강의는 학습 단위가 안 되므로 제외
         key = l.get("part") or "기타"
-        a = areas.setdefault(key, {"part": key, "lectures": 0, "done_lectures": 0,
+        a = areas.setdefault(key, {"key": key, "part": key, "kind": "lecture",
+                                    "lectures": 0, "done_lectures": 0,
                                     "total_q": 0, "answered_q": 0})
         done_here = sum(1 for q in qids if q in answered)
         a["lectures"] += 1
@@ -892,14 +897,58 @@ async def learn_areas():
         if done_here == len(qids):
             a["done_lectures"] += 1
 
+    # 교과교육학 — 강의 체계가 없으므로 과목(questions.chapter)이 곧 코스
+    cur = db.table("questions").select("id, chapter") \
+        .eq("source", "curriculum").eq("active", True).execute().data or []
+    for q in cur:
+        key = q["chapter"] or "[교육과정] 기타"
+        a = areas.setdefault(key, {"key": key, "part": key.replace("[교육과정]", "").strip(),
+                                    "kind": "curriculum", "lectures": 0, "done_lectures": 0,
+                                    "total_q": 0, "answered_q": 0})
+        a["total_q"] += 1
+        if q["id"] in answered:
+            a["answered_q"] += 1
+
     out = list(areas.values())
-    # 진행 중(일부만 푼) 영역 → 미착수 → 완료 순
     def rank(a):
-        if a["done_lectures"] == a["lectures"]:
+        if a["total_q"] and a["answered_q"] >= a["total_q"]:
             return 2
         return 0 if a["answered_q"] > 0 else 1
-    out.sort(key=lambda a: (rank(a), a["part"]))
+    out.sort(key=lambda a: (rank(a), a["kind"] != "curriculum", a["part"]))
     return out
+
+
+@app.get("/learn/curriculum/{chapter}")
+async def learn_curriculum(chapter: str, limit: int = 8):
+    """교과교육학 과목 하나에서 미답 카드 위주로 세션 구성.
+    강의(lecture) 체계가 없는 트랙이라 lecture 기반 엔드포인트를 쓸 수 없어 별도로 둔다."""
+    all_q = db.table("questions").select("*") \
+        .eq("source", "curriculum").eq("active", True).eq("chapter", chapter).execute().data or []
+    if not all_q:
+        raise HTTPException(404, "해당 과목의 카드가 없습니다.")
+    all_q.sort(key=lambda q: (LEARN_TYPE_ORDER.get(q["type"], 9), q["created_at"]))
+
+    qids = [q["id"] for q in all_q]
+    prev: dict[str, dict] = {}
+    rows = db.table("user_answers") \
+        .select("id, question_id, is_correct, score, feedback, answered_at") \
+        .in_("question_id", qids).order("answered_at").execute().data or []
+    for r in rows:
+        prev[r["question_id"]] = r
+
+    unanswered = [q for q in all_q if q["id"] not in prev]
+    questions = (unanswered or all_q)[:limit]
+    remaining = max(0, len(unanswered) - len(questions))
+
+    return {
+        "lecture": {"id": chapter, "lecture_no": 0,
+                     "title": chapter.replace("[교육과정]", "").strip(), "part": chapter},
+        "questions": questions,
+        "answered": {q["id"]: prev[q["id"]] for q in questions if q["id"] in prev},
+        "remaining": remaining,
+        "lecture_total": len(all_q),
+        "lecture_answered": len(prev),
+    }
 
 
 @app.get("/learn/areas/{part}/parts")

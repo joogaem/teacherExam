@@ -65,6 +65,8 @@ export const api = {
     areas: () => fetchAPI<LearnArea[]>("/learn/areas"),
     parts: (part: string) => fetchAPI<LearnPart[]>(`/learn/areas/${encodeURIComponent(part)}/parts`),
     session: (lectureId: string) => fetchAPI<LearnSession>(`/learn/parts/${lectureId}`),
+    curriculum: (chapter: string) =>
+      fetchAPI<LearnSession>(`/learn/curriculum/${encodeURIComponent(chapter)}`),
   },
   game: {
     progress: (bookId: string) => fetchAPI<GameLecture[]>(`/game/progress?book_id=${bookId}`),
@@ -205,7 +207,9 @@ export interface AnswerResult {
 }
 
 export interface LearnArea {
+  key: string;
   part: string;
+  kind: "lecture" | "curriculum";
   lectures: number;
   done_lectures: number;
   total_q: number;

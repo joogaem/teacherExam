@@ -38,12 +38,18 @@ export default function LearnPage() {
 
   useEffect(loadAreas, [loadAreas]);
 
-  const openArea = async (part: string, autoEnter = true) => {
+  const openArea = async (a: LearnArea, autoEnter = true) => {
     setStatus("loading");
-    setArea(part);
-    localStorage.setItem(LAST_KEY, part);
+    setArea(a.part);
+    localStorage.setItem(LAST_KEY, a.key);
     try {
-      const ps = await api.learn.parts(part);
+      // 교과교육학은 강의 체계가 없어 중간 목록 없이 바로 세션으로
+      if (a.kind === "curriculum") {
+        setParts([]);
+        await startSession(() => api.learn.curriculum(a.key));
+        return;
+      }
+      const ps = await api.learn.parts(a.key);
       setParts(ps);
       setStatus("ok");
       // §9-2 아침 결정 제로 — 안 끝난 첫 파트로 자동 진입
@@ -55,12 +61,15 @@ export default function LearnPage() {
     }
   };
 
-  const openPart = async (lectureId: string) => {
+  const startSession = async (fetcher: () => Promise<LearnSession>) => {
     setStatus("loading");
     try {
-      const s = await api.learn.session(lectureId);
+      const s = await fetcher();
+      const label = s.lecture.lecture_no
+        ? `[학습] ${s.lecture.lecture_no}강 ${s.lecture.title}`
+        : `[학습] ${s.lecture.title}`;
       const sess = await api.sessions.start({
-        chapter: `[학습] ${s.lecture.lecture_no}강 ${s.lecture.title}`.slice(0, 120),
+        chapter: label.slice(0, 120),
         question_ids: s.questions.map(q => q.id),
       });
       setSession(s);
@@ -72,6 +81,16 @@ export default function LearnPage() {
     } catch {
       setStatus("error");
     }
+  };
+
+  const openPart = (lectureId: string) => startSession(() => api.learn.session(lectureId));
+
+  const reopenCurrent = () => {
+    if (!session) return;
+    const id = session.lecture.id;
+    return session.lecture.lecture_no
+      ? startSession(() => api.learn.session(id))
+      : startSession(() => api.learn.curriculum(id));
   };
 
   const handleAnswer = (questionId: string) => async (answer: Record<string, unknown>) => {
@@ -104,22 +123,35 @@ export default function LearnPage() {
   /* ── 1. 영역 선택 ── */
   if (view === "areas") return (
     <Shell>
-      <p className="text-gray-500 text-sm mb-4">영역을 고르면 이어서 학습할 강의로 바로 들어갑니다.</p>
+      <p className="text-gray-500 text-sm mb-4">고르면 이어서 학습할 곳으로 바로 들어갑니다.</p>
       <div className="space-y-2">
         {areas.map(a => {
-          const pct = a.lectures ? Math.round((a.done_lectures / a.lectures) * 100) : 0;
+          const isCur = a.kind === "curriculum";
+          const pct = isCur
+            ? (a.total_q ? Math.round((a.answered_q / a.total_q) * 100) : 0)
+            : (a.lectures ? Math.round((a.done_lectures / a.lectures) * 100) : 0);
           return (
             <button
-              key={a.part}
-              onClick={() => openArea(a.part)}
+              key={a.key}
+              onClick={() => openArea(a)}
               className="w-full text-left bg-white rounded-xl p-4 shadow-sm border border-gray-100 hover:border-blue-300"
             >
-              <div className="flex justify-between items-baseline mb-2">
-                <span className="font-semibold text-gray-900">{a.part}</span>
-                <span className="text-sm text-gray-400">{a.lectures}강 중 {a.done_lectures}강 완료</span>
+              <div className="flex justify-between items-baseline mb-2 gap-2">
+                <span className="font-semibold text-gray-900">
+                  {isCur && (
+                    <span className="mr-1.5 px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[11px] align-middle">
+                      교과교육
+                    </span>
+                  )}
+                  {a.part}
+                </span>
+                <span className="text-sm text-gray-400 shrink-0">
+                  {isCur ? `${a.total_q}장 중 ${a.answered_q}장` : `${a.lectures}강 중 ${a.done_lectures}강 완료`}
+                </span>
               </div>
               <div className="bg-gray-100 rounded-full h-2">
-                <div className="h-2 rounded-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+                <div className={`h-2 rounded-full transition-all ${isCur ? "bg-purple-500" : "bg-blue-500"}`}
+                     style={{ width: `${pct}%` }} />
               </div>
             </button>
           );
@@ -166,16 +198,20 @@ export default function LearnPage() {
   const allSolved = solvedCount >= qs.length;
   const rightCount = Object.values(solved).filter(Boolean).length;
   const nextPart = parts.find(p => !p.done && p.lecture_id !== session.lecture.id);
+  const isCurriculum = !session.lecture.lecture_no;
 
   return (
     <Shell>
       <div className="mb-5">
         <div className="flex justify-between items-center text-sm text-gray-500 mb-2">
-          <button onClick={() => { setView("parts"); loadAreas(); }} className="text-gray-400">← 강의 목록</button>
+          <button onClick={() => { setView(isCurriculum ? "areas" : "parts"); loadAreas(); }}
+                  className="text-gray-400">
+            ← {isCurriculum ? "과목 목록" : "강의 목록"}
+          </button>
           <span>{solvedCount} / {qs.length}</span>
         </div>
         <h2 className="text-lg font-bold text-gray-900">
-          {session.lecture.lecture_no}강 · {session.lecture.title}
+          {isCurriculum ? session.lecture.title : `${session.lecture.lecture_no}강 · ${session.lecture.title}`}
         </h2>
         <div className="bg-gray-200 rounded-full h-2 mt-2">
           <div className="bg-blue-500 h-2 rounded-full transition-all"
@@ -185,7 +221,7 @@ export default function LearnPage() {
 
       <div className="space-y-4">
         {qs.map((q, i) => {
-          const d = q.question_data as { explanation?: string };
+          const d = q.question_data as { explanation?: string; source_text?: string };
           const answered = solved[q.id] !== undefined;
           return (
             <div key={q.id} className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
@@ -209,6 +245,18 @@ export default function LearnPage() {
                   <span className="font-semibold">해설 </span>{d.explanation}
                 </div>
               )}
+
+              {/* 고시문 원문 — 교과교육 문항은 원문 표현을 토씨까지 요구하므로 답 직후 원문을 붙인다 */}
+              {answered && d.source_text && (
+                <details className="mt-3" open>
+                  <summary className="cursor-pointer text-sm font-semibold text-purple-700">
+                    📄 고시문 원문
+                  </summary>
+                  <pre className="mt-2 p-3 rounded-lg bg-purple-50 border border-purple-200 text-sm text-gray-800 whitespace-pre-wrap font-sans leading-relaxed">
+                    {d.source_text}
+                  </pre>
+                </details>
+              )}
             </div>
           );
         })}
@@ -220,9 +268,9 @@ export default function LearnPage() {
           <p className="text-gray-500 mb-4">{qs.length}문제 중 {rightCount}개 맞았어요.</p>
           <div className="flex gap-2 flex-wrap">
             {session.remaining > 0 && (
-              <button onClick={() => openPart(session.lecture.id)}
+              <button onClick={reopenCurrent}
                       className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-semibold text-sm">
-                이 강의 이어서 {session.remaining}문제 →
+                이어서 {session.remaining}문제 →
               </button>
             )}
             {session.remaining === 0 && nextPart && (
@@ -231,9 +279,9 @@ export default function LearnPage() {
                 다음 강의 ({nextPart.lecture_no}강) →
               </button>
             )}
-            <button onClick={() => { setView("parts"); loadAreas(); }}
+            <button onClick={() => { setView(isCurriculum ? "areas" : "parts"); loadAreas(); }}
                     className="px-5 py-2.5 rounded-xl border-2 border-gray-200 text-gray-600 font-semibold text-sm">
-              강의 목록
+              {isCurriculum ? "과목 목록" : "강의 목록"}
             </button>
           </div>
         </div>
