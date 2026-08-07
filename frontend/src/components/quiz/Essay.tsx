@@ -5,6 +5,9 @@ import { api, type EssayData, type AnswerResult } from "@/lib/api";
 interface Props {
   data: EssayData;
   onSubmit: (answer: Record<string, unknown>) => Promise<AnswerResult>;
+  /** short=단답형(한 줄 입력), essay=서술형(여러 줄 작성). 화면에서 두 유형이
+   *  구분되지 않아 사용자가 혼동한다는 피드백으로 분리 (§9-5). */
+  variant?: "essay" | "short";
 }
 
 const VERDICTS = [
@@ -13,12 +16,14 @@ const VERDICTS = [
   { key: "no" as const, label: "못 썼다", desc: "다시 봐야 함", cls: "bg-red-100 text-red-700 border-2 border-red-300" },
 ];
 
-export default function Essay({ data, onSubmit }: Props) {
+export default function Essay({ data, onSubmit, variant = "essay" }: Props) {
   const [text, setText] = useState("");
   const [result, setResult] = useState<AnswerResult | null>(null);
   const [showModel, setShowModel] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selfGraded, setSelfGraded] = useState<string | null>(null);
+  const isShort = variant === "short";
+  const minLen = isShort ? 1 : 20;   // 단답형에 20자를 요구하면 제출 자체가 막힌다
 
   const handleSubmit = async () => {
     setLoading(true);
@@ -57,21 +62,39 @@ export default function Essay({ data, onSubmit }: Props) {
         </div>
       )}
 
-      <textarea
-        value={text}
-        onChange={e => setText(e.target.value)}
-        disabled={!!result}
-        rows={8}
-        placeholder="답안을 작성하세요..."
-        className="w-full border rounded-lg p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400"
-      />
-      <p className="text-xs text-gray-400 text-right">{text.length}자</p>
+      {isShort ? (
+        <input
+          type="text"
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter" && !result && text.trim() && !loading) handleSubmit();
+          }}
+          disabled={!!result}
+          placeholder="한 단어 또는 짧은 구로 답하세요"
+          className="w-full border rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400 disabled:bg-gray-50"
+        />
+      ) : (
+        <>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            disabled={!!result}
+            rows={8}
+            placeholder="답안을 작성하세요..."
+            className="w-full border rounded-lg p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-400"
+          />
+          <p className="text-xs text-gray-400 text-right">{text.length}자</p>
+        </>
+      )}
 
       {!result && (
         <button
           onClick={handleSubmit}
-          disabled={text.trim().length < 20 || loading}
-          className="w-full py-3 rounded-lg bg-blue-600 text-white font-semibold disabled:opacity-40"
+          disabled={text.trim().length < minLen || loading}
+          className={`w-full py-3 rounded-lg text-white font-semibold disabled:opacity-40 ${
+            isShort ? "bg-teal-600" : "bg-blue-600"
+          }`}
         >
           {loading ? "채점 중..." : "제출"}
         </button>

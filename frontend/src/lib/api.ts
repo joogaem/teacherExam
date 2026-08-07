@@ -64,7 +64,8 @@ export const api = {
   learn: {
     areas: () => fetchAPI<LearnArea[]>("/learn/areas"),
     parts: (part: string) => fetchAPI<LearnPart[]>(`/learn/areas/${encodeURIComponent(part)}/parts`),
-    session: (lectureId: string) => fetchAPI<LearnSession>(`/learn/parts/${lectureId}`),
+    session: (lectureId: string, stage = 1) =>
+      fetchAPI<LearnSession>(`/learn/parts/${lectureId}?stage=${stage}`),
     curriculum: (chapter: string) =>
       fetchAPI<LearnSession>(`/learn/curriculum/${encodeURIComponent(chapter)}`),
   },
@@ -193,6 +194,8 @@ export interface AnswerRequest {
   question_id: string;
   user_answer: Record<string, unknown>;
   time_spent_sec: number;
+  /** 서술형 답변 방식 — keyword=핵심어만 회상(1단계), full=문장 작성(2단계). 기본 full */
+  mode?: "full" | "keyword";
 }
 
 export interface AnswerResult {
@@ -204,6 +207,9 @@ export interface AnswerResult {
   answer_id?: string;
   model_answer?: string;
   key_concepts?: string[];
+  // 키워드 회상 모드 채점 결과
+  recalled?: string[];
+  missed?: string[];
 }
 
 export interface LearnArea {
@@ -233,6 +239,9 @@ export interface LearnSession {
   remaining: number;
   lecture_total: number;
   lecture_answered: number;
+  /** 1=전 유형(서술형은 키워드 회상), 2=서술형만 문장으로 작성 */
+  stage: number;
+  essay_total: number;
 }
 
 export interface LectureProgress {

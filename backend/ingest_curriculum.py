@@ -25,12 +25,15 @@ import re
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8")
+
 from db import get_client
 from question_gen import claude, MODEL, _parse_json
 
 TXT_PATH = Path(r"C:\Users\ssduw\workspace\기출분석\교육과정\별책10_정보과.txt")
+TXT_PATH_20 = Path(r"C:\Users\ssduw\workspace\기출분석\교육과정\별책20_정보과학.txt")
 
-# (표시명, 코드 접두어, 시작줄, 끝줄(배타적), {영역번호: 영역명})
+# (표시명, 코드 접두어, 시작줄, 끝줄(배타적), {영역번호: 영역명}, [원문 파일경로 — 생략 시 TXT_PATH])
 COURSES = [
     ("정보(중학교)", "9정", 0, 533, {
         "01": "컴퓨팅 시스템", "02": "데이터", "03": "알고리즘과 프로그래밍",
@@ -53,6 +56,11 @@ COURSES = [
         "03": "현상을 분석하는 소프트웨어", "04": "모의 실험하는 소프트웨어",
         "05": "가치를 창출하는 소프트웨어",
     }),
+    # 별책20(과학 계열 선택 과목) — 정보과학(고등, 진로선택)만 발췌 (2026-08-05, 행정예고본 hwp 추출)
+    ("정보과학(고등학교, 진로선택)", "12정과", 0, 10**9, {
+        "01": "프로그래밍", "02": "데이터 구조",
+        "03": "알고리즘", "04": "정보과학 프로젝트",
+    }, TXT_PATH_20),
 ]
 
 STANDARD_RE = re.compile(
@@ -61,8 +69,8 @@ STANDARD_RE = re.compile(
 )
 
 
-def load_lines() -> list[str]:
-    return TXT_PATH.read_text(encoding="utf-8").splitlines()
+def load_lines(path: Path = TXT_PATH) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines()
 
 
 def course_text(lines: list[str], start: int, end: int) -> str:
@@ -70,12 +78,18 @@ def course_text(lines: list[str], start: int, end: int) -> str:
 
 
 def extract_standards(text: str, expected_prefix: str) -> list[tuple[str, str, str]]:
-    """반환: [(전체코드, 영역번호, 원문텍스트), ...] — expected_prefix로 이 과목 소속만 필터."""
+    """반환: [(전체코드, 영역번호, 원문텍스트), ...] — expected_prefix로 이 과목 소속만 필터.
+    성취기준 해설 절이 "• [코드]"(별책10, fitz)가 아니라 "[코드]"로 바로 시작하는 원자료도 있어
+    (별책20, hwp 추출) 같은 코드가 두 번 매칭될 수 있다 — 첫 등장(=실제 성취기준 목록)만 채택."""
+    seen: set[str] = set()
     out = []
     for prefix, area_no, sub_no, body in STANDARD_RE.findall(text):
         if prefix != expected_prefix:
             continue
         code = f"[{prefix}{area_no}-{sub_no}]"
+        if code in seen:
+            continue
+        seen.add(code)
         clean = " ".join(body.split())
         out.append((code, area_no, clean))
     return out
@@ -90,8 +104,9 @@ def extract_content_structure_block(text: str, area_no: str, area_name: str) -> 
 
 
 def extract_teaching_eval_block(text: str) -> str:
-    """"(1) 교수⋅학습의 방향" 부터 과목 끝(또는 다음 "1. 성격" 직전)까지."""
-    m = re.search(r"교수⋅학습의 방향(.*?)(?=\Z)", text, re.DOTALL)
+    """"(1) 교수⋅학습의 방향" 부터 과목 끝(또는 다음 "1. 성격" 직전)까지.
+    가운뎃점 문자가 원자료마다 다르다(fitz 추출=U+22C5 ⋅, hwp 추출=U+00B7 ·) — 둘 다 허용."""
+    m = re.search(r"교수[⋅·]학습의 방향(.*?)(?=\Z)", text, re.DOTALL)
     return m.group(0)[:4000] if m else ""
 
 
@@ -181,7 +196,13 @@ def insert_card(db, course: str, concept_name: str, card_type: str, question_dat
 
 
 def main(dry_run: bool, only: list[str] | None = None):
-    lines = load_lines()
+    lines_cache: dict[Path, list[str]] = {}
+
+    def lines_for(path: Path) -> list[str]:
+        if path not in lines_cache:
+            lines_cache[path] = load_lines(path)
+        return lines_cache[path]
+
     db = get_client()
     total_cards = 0
 
@@ -193,8 +214,10 @@ def main(dry_run: bool, only: list[str] | None = None):
             return
         print(f"대상 과목만 처리: {[c[0] for c in courses]}")
 
-    for course, prefix, start, end, area_map in courses:
-        text = course_text(lines, start, end)
+    for entry in courses:
+        course, prefix, start, end, area_map = entry[:5]
+        path = entry[5] if len(entry) > 5 else TXT_PATH
+        text = course_text(lines_for(path), start, end)
         print(f"\n=== {course} ({prefix}) ===")
 
         # (a)+(b) 성취기준: 코드매핑(결정론) + 빈칸(LLM)

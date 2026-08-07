@@ -6,9 +6,15 @@ import MCQ from "@/components/quiz/MCQ";
 import FillBlank from "@/components/quiz/FillBlank";
 import Matching from "@/components/quiz/Matching";
 import Essay from "@/components/quiz/Essay";
+import KeywordRecall from "@/components/quiz/KeywordRecall";
 
-const TYPE_LABEL: Record<string, string> = {
-  mcq: "객관식", fill_blank: "빈칸", matching: "짝맞추기", essay: "서술형", short_answer: "단문 서술",
+// 학습 모드와 같은 배지 체계 — 단답/서술형이 한 큐에 섞여 나오므로 색으로 구분한다 (§9-5)
+const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
+  mcq: { label: "객관식", cls: "bg-blue-100 text-blue-700" },
+  fill_blank: { label: "빈칸", cls: "bg-blue-100 text-blue-700" },
+  matching: { label: "짝맞추기", cls: "bg-blue-100 text-blue-700" },
+  short_answer: { label: "단답", cls: "bg-teal-100 text-teal-700" },
+  essay: { label: "서술형 · 키워드", cls: "bg-indigo-100 text-indigo-700" },
 };
 
 export default function ReviewSessionPage() {
@@ -49,6 +55,8 @@ export default function ReviewSessionPage() {
       question_id: q.id,
       user_answer: answer,
       time_spent_sec: elapsed,
+      // 오늘의 복습에서 서술형은 항상 키워드 회상 — 매일 도는 큐를 문장 작성으로 막지 않는다
+      mode: q.type === "essay" ? "keyword" : "full",
     });
     setStartTime(Date.now());
     return result;
@@ -142,8 +150,10 @@ export default function ReviewSessionPage() {
 
         <div key={q.id} className="bg-white rounded-2xl shadow-sm p-6 mb-4">
           <div className="flex items-center gap-2 mb-4">
-            <span className="px-2 py-1 rounded bg-blue-100 text-blue-700 text-xs font-semibold">
-              {TYPE_LABEL[q.type] ?? q.type}
+            <span className={`px-2 py-1 rounded text-xs font-semibold ${
+              TYPE_BADGE[q.type]?.cls ?? "bg-gray-100 text-gray-600"
+            }`}>
+              {TYPE_BADGE[q.type]?.label ?? q.type}
             </span>
             <span className="px-2 py-1 rounded bg-gray-100 text-gray-500 text-xs">{card.subject}</span>
           </div>
@@ -151,8 +161,11 @@ export default function ReviewSessionPage() {
           {q.type === "mcq" && <MCQ data={q.question_data as MCQData} onSubmit={handleAnswer} />}
           {q.type === "fill_blank" && <FillBlank data={q.question_data as FillBlankData} onSubmit={handleAnswer} />}
           {q.type === "matching" && <Matching data={q.question_data as MatchingData} onSubmit={handleAnswer} />}
-          {(q.type === "essay" || q.type === "short_answer") && (
-            <Essay data={q.question_data as EssayData} onSubmit={handleAnswer} />
+          {q.type === "short_answer" && (
+            <Essay data={q.question_data as EssayData} variant="short" onSubmit={handleAnswer} />
+          )}
+          {q.type === "essay" && (
+            <KeywordRecall data={q.question_data as EssayData} onSubmit={handleAnswer} />
           )}
         </div>
 

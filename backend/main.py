@@ -371,6 +371,8 @@ class AnswerRequest(BaseModel):
     question_id: str
     user_answer: dict
     time_spent_sec: int = 0
+    # 서술형 답변 방식 (§9-5). full=문장으로 작성(LLM 채점), keyword=핵심어만 회상(로컬 채점).
+    mode: Literal["full", "keyword"] = "full"
 
 
 def _norm(s: str) -> str:
@@ -415,6 +417,34 @@ def _linked_concepts(question_id: str) -> list[dict]:
         if c:
             out.append({"id": c["id"], "name": c["name"]})
     return out
+
+
+# 서술형 1단계(키워드 회상) — PHASE1_SPEC §9-5
+# 교육학 강의 문항 668개 중 475개가 서술형이고 65개 강의 중 42개는 서술형뿐이라,
+# "서술형을 빼면" 학습 단계에 남는 게 없다. 그래서 문항을 빼는 대신 **답변 방식**을 낮춘다:
+# 1단계는 핵심어만 인출(=회상 연습은 그대로 성립), 문장 작성은 2단계에서 원할 때만.
+KEYWORD_HIT_RATIO = 0.6   # 핵심 개념 이 비율 이상 회상하면 정답 처리
+KEYWORD_QUALITY_CAP = 4   # 키워드만으로는 '완전 숙달' 판정을 주지 않아 간격이 과하게 벌어지지 않게 함
+
+
+def _grade_keyword_recall(q_data: dict, text: str) -> dict:
+    """핵심 개념 포함 여부만 보는 로컬 채점 (LLM 호출 없음 → 크레딧·응답속도 무관)."""
+    keys = [k for k in (q_data.get("key_concepts") or []) if k and k.strip()]
+    if not keys:
+        # 판정 근거(핵심 개념)가 없는 문항 → 기존 자가 채점 경로로 넘긴다
+        return {"unavailable": True}
+
+    def squash(s: str) -> str:
+        return _norm(s).replace(" ", "")
+
+    user = squash(text)
+    hit = [k for k in keys if squash(k) and squash(k) in user]
+    missed = [k for k in keys if k not in hit]
+
+    fb = f"핵심 개념 {len(hit)}/{len(keys)}개 회상"
+    if missed:
+        fb += f" · 놓친 것: {', '.join(missed)}"
+    return {"score": len(hit) / len(keys), "hit": hit, "missed": missed, "feedback": fb}
 
 
 def _concept_verdicts_from_grading(linked: list[dict], graded: list[dict]) -> list[dict]:
@@ -499,15 +529,26 @@ async def submit_answer(req: AnswerRequest):
         is_correct = score == 1.0
 
     needs_self_grade = False
+    keyword_result: dict | None = None
 
     if q_type in ("essay", "short_answer"):
-        result = grade_essay(q_data, req.user_answer.get("text", ""))
-        feedback = result["feedback"]
+        # 키워드 회상 모드는 서술형에만 적용 — 단답형은 원래 한 줄 답이라 낮출 단계가 없다
+        use_keyword = q_type == "essay" and req.mode == "keyword"
+        result = (
+            _grade_keyword_recall(q_data, req.user_answer.get("text", ""))
+            if use_keyword
+            else grade_essay(q_data, req.user_answer.get("text", ""))
+        )
+        feedback = result.get("feedback", "")
         if result.get("unavailable"):
-            # LLM 채점 불가 → 답안은 저장하되 점수 미정으로 두고 자가 채점으로 넘긴다.
+            # 채점 불가(LLM 장애 또는 핵심 개념 미보유) → 답안은 저장하되 자가 채점으로 넘긴다.
             needs_self_grade = True
             score = None
             is_correct = None
+        elif use_keyword:
+            keyword_result = result
+            score = result["score"]
+            is_correct = score >= KEYWORD_HIT_RATIO
         else:
             score = result["score"]
             is_correct = score >= 0.6
@@ -534,6 +575,10 @@ async def submit_answer(req: AnswerRequest):
     # (점수가 높아도 간격이 크게 벌어지지 않게. PHASE1_SPEC §6-3)
     has_gap = any(v["verdict"] in ("missing", "misconception") for v in concept_verdicts)
     quality_cap = 3 if has_gap else None
+    if keyword_result is not None:
+        # 키워드 회상은 서술보다 쉬운 인출이라 만점이어도 '숙달'로 보지 않는다 —
+        # 상한을 걸어 복습 주기에서 너무 일찍 빠지지 않게 한다(§9-5).
+        quality_cap = min(quality_cap or KEYWORD_QUALITY_CAP, KEYWORD_QUALITY_CAP)
     for v in concept_verdicts:
         update_sr_concept(v["concept_id"], score, quality_cap=quality_cap)
 
@@ -553,6 +598,13 @@ async def submit_answer(req: AnswerRequest):
             "answer_id": (saved[0]["id"] if saved else None),
             "model_answer": q_data.get("model_answer", ""),
             "key_concepts": q_data.get("key_concepts", []),
+        })
+    if keyword_result is not None:
+        # 어떤 핵심어를 떠올렸고 뭘 놓쳤는지 + 모범답안을 바로 대조할 수 있게 함께 내려준다
+        resp.update({
+            "recalled": keyword_result["hit"],
+            "missed": keyword_result["missed"],
+            "model_answer": q_data.get("model_answer", ""),
         })
     return resp
 
@@ -948,6 +1000,9 @@ async def learn_curriculum(chapter: str, limit: int = 8):
         "remaining": remaining,
         "lecture_total": len(all_q),
         "lecture_answered": len(prev),
+        # 교과교육 카드는 단답·빈칸뿐이라 서술 단계가 없다 — 응답 모양만 학습 세션과 맞춘다
+        "stage": 1,
+        "essay_total": 0,
     }
 
 
@@ -974,18 +1029,22 @@ LEARN_SESSION_SIZE = 8   # 한 번에 내주는 최대 문항 수
 
 
 @app.get("/learn/parts/{lecture_id}")
-async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE):
+async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE, stage: int = 1):
     """파트 하나 = 그 강의의 문제 세트(쉬운 유형 → 어려운 유형).
 
     강의마다 문항 수 편차가 크다(1~23개). 23문항을 한 번에 내주면 사용자가 지적한
     '한 화면에 너무 많다' 문제가 그대로 재현되므로, **미답 문항 위주로 최대 limit개**만
-    내주고 나머지는 remaining으로 알린다(§9-2, §0-2 "끝낼 수 있는 크기")."""
+    내주고 나머지는 remaining으로 알린다(§9-2, §0-2 "끝낼 수 있는 크기").
+
+    stage(§9-5): 1=전 유형(서술형은 키워드 회상으로 제시), 2=서술형만 문장으로 작성.
+    2단계는 이미 푼 문항도 다시 내준다 — 같은 문제를 더 높은 요구 수준으로 한 번 더 보는 패스라서."""
     lecture = get_lecture(lecture_id)
     if not lecture:
         raise HTTPException(404, "강의를 찾을 수 없습니다.")
 
     all_q = db.table("questions").select("*").eq("lecture_id", lecture_id).execute().data or []
     all_q.sort(key=lambda q: (LEARN_TYPE_ORDER.get(q["type"], 9), q["created_at"]))
+    essay_total = sum(1 for q in all_q if q["type"] == "essay")
 
     qids = [q["id"] for q in all_q]
     prev: dict[str, dict] = {}
@@ -996,14 +1055,19 @@ async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE):
         for r in rows:      # 같은 문항을 여러 번 풀었으면 최신 답안만 남김
             prev[r["question_id"]] = r
 
-    unanswered = [q for q in all_q if q["id"] not in prev]
-    if unanswered:
-        questions = unanswered[:limit]
-        remaining = len(unanswered) - len(questions)
+    if stage == 2:
+        pool = [q for q in all_q if q["type"] == "essay"]
+        questions = pool[:limit]
+        remaining = max(0, len(pool) - len(questions))
     else:
-        # 이미 다 푼 강의 → 복습으로 전체를 다시 보여준다
-        questions = all_q[:limit]
-        remaining = 0
+        unanswered = [q for q in all_q if q["id"] not in prev]
+        if unanswered:
+            questions = unanswered[:limit]
+            remaining = len(unanswered) - len(questions)
+        else:
+            # 이미 다 푼 강의 → 복습으로 전체를 다시 보여준다
+            questions = all_q[:limit]
+            remaining = 0
 
     return {
         "lecture": {"id": lecture["id"], "lecture_no": lecture["lecture_no"],
@@ -1013,6 +1077,8 @@ async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE):
         "remaining": remaining,
         "lecture_total": len(all_q),
         "lecture_answered": len(prev),
+        "stage": stage,
+        "essay_total": essay_total,
     }
 
 

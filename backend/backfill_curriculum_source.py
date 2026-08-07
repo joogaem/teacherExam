@@ -30,13 +30,22 @@ MAX_LEN = 1800
 
 def build_source_maps():
     """코드→원문, (과목,영역)→내용체계, 과목→교수학습평가 맵을 만든다."""
-    lines = load_lines()
+    from ingest_curriculum import TXT_PATH
+    lines_cache = {}
+
+    def lines_for(path):
+        if path not in lines_cache:
+            lines_cache[path] = load_lines(path)
+        return lines_cache[path]
+
     by_code: dict[str, str] = {}
     by_area: dict[tuple[str, str], str] = {}
     by_course: dict[str, str] = {}
 
-    for course, prefix, start, end, area_map in COURSES:
-        text = course_text(lines, start, end)
+    for entry in COURSES:
+        course, prefix, start, end, area_map = entry[:5]
+        path = entry[5] if len(entry) > 5 else TXT_PATH
+        text = course_text(lines_for(path), start, end)
 
         # 성취기준 원문 (줄 맨앞 [코드])
         for m in re.finditer(

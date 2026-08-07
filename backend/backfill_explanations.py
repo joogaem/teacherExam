@@ -15,6 +15,8 @@ mcq는 이미 explanation 보유, essay는 model_answer로 대체되므로 대�
 import argparse
 import sys
 
+sys.stdout.reconfigure(encoding="utf-8")
+
 from db import get_client
 from question_gen import claude, MODEL, _parse_json
 

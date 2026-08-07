@@ -10,9 +10,15 @@ import MCQ from "@/components/quiz/MCQ";
 import FillBlank from "@/components/quiz/FillBlank";
 import Matching from "@/components/quiz/Matching";
 import Essay from "@/components/quiz/Essay";
+import KeywordRecall from "@/components/quiz/KeywordRecall";
 
-const TYPE_LABEL: Record<string, string> = {
-  mcq: "객관식", matching: "짝맞추기", fill_blank: "빈칸", short_answer: "단문 서술", essay: "서술형",
+// 단답형과 서술형이 같은 배지·같은 입력창이라 구분이 안 된다는 피드백 → 색까지 분리 (§9-5)
+const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
+  mcq: { label: "객관식", cls: "bg-blue-100 text-blue-700" },
+  matching: { label: "짝맞추기", cls: "bg-blue-100 text-blue-700" },
+  fill_blank: { label: "빈칸", cls: "bg-blue-100 text-blue-700" },
+  short_answer: { label: "단답", cls: "bg-teal-100 text-teal-700" },
+  essay: { label: "서술형", cls: "bg-indigo-100 text-indigo-700" },
 };
 const LAST_KEY = "learn_last_area";
 
@@ -83,26 +89,30 @@ export default function LearnPage() {
     }
   };
 
-  const openPart = (lectureId: string) => startSession(() => api.learn.session(lectureId));
+  const openPart = (lectureId: string, stage = 1) =>
+    startSession(() => api.learn.session(lectureId, stage));
 
-  const reopenCurrent = () => {
+  const reopenCurrent = (stage?: number) => {
     if (!session) return;
     const id = session.lecture.id;
     return session.lecture.lecture_no
-      ? startSession(() => api.learn.session(id))
+      ? startSession(() => api.learn.session(id, stage ?? session.stage))
       : startSession(() => api.learn.curriculum(id));
   };
 
-  const handleAnswer = (questionId: string) => async (answer: Record<string, unknown>) => {
-    const res = await api.sessions.answer({
-      session_id: sessionId,
-      question_id: questionId,
-      user_answer: answer,
-      time_spent_sec: 0,
-    });
-    setSolved(s => ({ ...s, [questionId]: res.is_correct !== false }));
-    return res;
-  };
+  const handleAnswer =
+    (questionId: string, mode: "full" | "keyword" = "full") =>
+    async (answer: Record<string, unknown>) => {
+      const res = await api.sessions.answer({
+        session_id: sessionId,
+        question_id: questionId,
+        user_answer: answer,
+        time_spent_sec: 0,
+        mode,
+      });
+      setSolved(s => ({ ...s, [questionId]: res.is_correct !== false }));
+      return res;
+    };
 
   /* ── 공통 상태 화면 ── */
   if (status === "error") return (
@@ -199,6 +209,8 @@ export default function LearnPage() {
   const rightCount = Object.values(solved).filter(Boolean).length;
   const nextPart = parts.find(p => !p.done && p.lecture_id !== session.lecture.id);
   const isCurriculum = !session.lecture.lecture_no;
+  // 1단계에서는 서술형을 키워드 회상으로 낮춰 제시한다 (§9-5)
+  const keywordStage = session.stage === 1;
 
   return (
     <Shell>
@@ -212,6 +224,11 @@ export default function LearnPage() {
         </div>
         <h2 className="text-lg font-bold text-gray-900">
           {isCurriculum ? session.lecture.title : `${session.lecture.lecture_no}강 · ${session.lecture.title}`}
+          {session.stage === 2 && (
+            <span className="ml-2 px-2 py-0.5 rounded bg-indigo-600 text-white text-xs align-middle">
+              서술 연습
+            </span>
+          )}
         </h2>
         <div className="bg-gray-200 rounded-full h-2 mt-2">
           <div className="bg-blue-500 h-2 rounded-full transition-all"
@@ -227,16 +244,28 @@ export default function LearnPage() {
             <div key={q.id} className="bg-white rounded-2xl shadow-sm p-5 border border-gray-100">
               <div className="flex items-center gap-2 mb-3">
                 <span className="font-bold text-gray-400">{i + 1}.</span>
-                <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 text-xs font-semibold">
-                  {TYPE_LABEL[q.type] ?? q.type}
+                <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                  TYPE_BADGE[q.type]?.cls ?? "bg-gray-100 text-gray-600"
+                }`}>
+                  {TYPE_BADGE[q.type]?.label ?? q.type}
                 </span>
+                {q.type === "essay" && keywordStage && (
+                  <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-600 text-xs font-medium">
+                    키워드만
+                  </span>
+                )}
               </div>
 
               {q.type === "mcq" && <MCQ data={q.question_data as MCQData} onSubmit={handleAnswer(q.id)} />}
               {q.type === "fill_blank" && <FillBlank data={q.question_data as FillBlankData} onSubmit={handleAnswer(q.id)} />}
               {q.type === "matching" && <Matching data={q.question_data as MatchingData} onSubmit={handleAnswer(q.id)} />}
-              {(q.type === "essay" || q.type === "short_answer") && (
-                <Essay data={q.question_data as EssayData} onSubmit={handleAnswer(q.id)} />
+              {q.type === "short_answer" && (
+                <Essay data={q.question_data as EssayData} variant="short" onSubmit={handleAnswer(q.id)} />
+              )}
+              {q.type === "essay" && (
+                keywordStage
+                  ? <KeywordRecall data={q.question_data as EssayData} onSubmit={handleAnswer(q.id, "keyword")} />
+                  : <Essay data={q.question_data as EssayData} onSubmit={handleAnswer(q.id)} />
               )}
 
               {/* 해설 — mcq는 채점 피드백이 곧 해설이라 중복 표시하지 않음 */}
@@ -266,9 +295,21 @@ export default function LearnPage() {
         <div className="mt-6 bg-white rounded-2xl border-2 border-gray-800 p-6">
           <p className="text-xl font-bold mb-1">이 세트 완료!</p>
           <p className="text-gray-500 mb-4">{qs.length}문제 중 {rightCount}개 맞았어요.</p>
+          {/* 서술 연습은 '밀린 것'이 아니라 원할 때 고르는 추가 패스 — 강요하지 않는다 (§0-2) */}
+          {session.stage === 1 && session.essay_total > 0 && session.remaining === 0 && (
+            <div className="mb-4 p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+              <p className="text-sm text-indigo-900 mb-2">
+                여기 서술형 {session.essay_total}개는 키워드로만 풀었어요. 문장으로도 써볼래요?
+              </p>
+              <button onClick={() => reopenCurrent(2)}
+                      className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold text-sm">
+                ✍️ 문장으로 써보기 →
+              </button>
+            </div>
+          )}
           <div className="flex gap-2 flex-wrap">
             {session.remaining > 0 && (
-              <button onClick={reopenCurrent}
+              <button onClick={() => reopenCurrent()}
                       className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-semibold text-sm">
                 이어서 {session.remaining}문제 →
               </button>
