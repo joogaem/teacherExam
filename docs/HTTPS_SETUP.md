@@ -142,6 +142,9 @@ sudo certbot certonly --webroot -w /var/www/html \
 
 ## 단계 4. nginx를 443 + server_name 기반으로 재작성
 
+> ⚠️ **아래 예시는 실전에서 3군데 틀렸다. 반드시 "실전 정정" 절(문서 맨 아래)을 먼저 읽을 것.**
+> 실제로 적용해 동작 중인 설정은 서버의 `/etc/nginx/sites-available/https` 가 정본이다.
+
 `내이름` 부분을 전부 실제 값으로 바꾼 뒤 실행한다.
 
 ```bash
@@ -318,3 +321,87 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 인증서 자체는 남아 있어도 무해하다.
+
+---
+
+# 실전 정정 (2026-08-10 실제 적용하며 걸린 것들)
+
+이 문서 초안대로 하면 **세 번 실패한다.** 실제 서버(nginx 1.18.0 / Ubuntu 22.04)에서 겪은 것:
+
+### 1. DuckDNS가 서버가 아니라 "내 PC" IP를 등록한다
+
+DuckDNS 웹페이지는 `current ip` 칸에 **접속한 브라우저의 IP를 미리 채워둔다.**
+그대로 update ip를 누르면 집 IP(예: 124.62.x.x)가 등록되고, Let's Encrypt가 집으로
+검증하러 가서 반드시 실패한다.
+
+**해결:** 서버에서 아래를 실행한다. `ip=` 를 **비워두면** DuckDNS가 요청자 IP(=서버)를 쓴다.
+
+```bash
+curl -s "https://www.duckdns.org/update?domains=joogaem-quiz,joogaem-eat,joogaem-focus&token=<토큰>&ip=" && echo
+```
+
+검증: `nslookup joogaem-quiz.duckdns.org` 가 서버 IP를 반환해야 한다.
+
+### 2. `certonly --webroot` 는 TLS 옵션 파일을 만들지 않는다
+
+`include /etc/letsencrypt/options-ssl-nginx.conf;` 와 `ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;`
+는 **certbot의 nginx 플러그인이 설치될 때 생기는 파일**이다. `certonly --webroot` 로 받으면
+이 파일들이 없어서 `nginx -t` 가 "No such file" 로 죽는다.
+
+**해결:** TLS 설정을 직접 스니펫으로 쓴다.
+
+```bash
+sudo tee /etc/nginx/snippets/tls.conf > /dev/null << 'EOF2'
+ssl_session_timeout 1d;
+ssl_session_cache shared:MozSSL:10m;
+ssl_session_tickets off;
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers off;
+EOF2
+```
+
+각 server 블록에서 `include snippets/tls.conf;` 로 부른다.
+
+### 3. `http2 on;` 은 nginx 1.25.1+ 문법이다
+
+Ubuntu 22.04의 nginx는 **1.18.0**이라 `unknown directive "http2"` 로 죽는다.
+
+**해결:** `listen` 줄에 붙이는 구문법을 쓴다.
+
+```nginx
+listen 443 ssl http2;     # O (1.18)
+# listen 443 ssl;
+# http2 on;               # X (1.25.1+)
+```
+
+### 4. 64자 토큰은 map 해시 버킷에 안 들어간다
+
+신뢰기기 쿠키 토큰을 `openssl rand -hex 32`(=64자)로 만들면
+`could not build map_hash, you should increase map_hash_bucket_size: 64` 로 죽는다.
+
+**해결:** map 파일 맨 위에 한 줄 추가(http 컨텍스트 지시어다).
+
+```nginx
+map_hash_bucket_size 128;
+```
+
+### 실패해도 서비스는 안 죽는다 — 다만 방치하면 위험
+
+`nginx -t` 가 실패하면 reload가 안 되므로 **기존 설정 그대로 계속 서비스된다.**
+하지만 깨진 파일이 `sites-enabled/` 에 이미 링크된 상태라, 그 상태로 **재부팅되거나
+인증서 갱신 훅이 nginx를 건드리면 nginx가 아예 못 뜬다.** 반드시 그 자리에서 고칠 것.
+
+---
+
+## 최종 상태 (2026-08-10)
+
+| 주소 | 앱 | 검증 |
+|---|---|---|
+| `https://joogaem-quiz.duckdns.org` | 임용 퀴즈 | TLSv1.3, Verify return code: 0 |
+| `https://joogaem-eat.duckdns.org` | eatNwrite + 자기관리 기록 | 동일 인증서(SAN) |
+| `https://joogaem-focus.duckdns.org` | focus-app | 동일 인증서(SAN) |
+
+- 인증서: Let's Encrypt, 3개 도메인 SAN 1장, 만료 2026-11-08, 자동 갱신 설정됨
+- 구 포트(8001 / 3001 / 80)는 **아직 그대로 살려둠** — 이관 확인 후 정리
+- 신뢰기기 쿠키(`quizauth`) 적용됨 — 기기당 `https://joogaem-quiz.duckdns.org/trust` 1회 방문이면 이후 로그인 불필요

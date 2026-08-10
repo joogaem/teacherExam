@@ -12,7 +12,11 @@
 
 ## 운영 서버 (AWS Lightsail) — 2026-07-08 구조 개편
 
-- 접속: **http://43.202.142.135:8001 한 곳** (Basic Auth — 로그인 정보는 사용자 `Documents\lightsail-basic-auth.txt`). 구주소 :3000은 자동 리다이렉트.
+- 접속: **https://joogaem-quiz.duckdns.org** (2026-08-10 HTTPS 전환. Let's Encrypt, 3개 도메인 SAN 1장, 자동 갱신).
+  - 기기 등록: `/trust` 를 한 번 방문하면 1년짜리 `quizauth` 쿠키가 심어져 이후 Basic Auth 프롬프트가 안 뜬다. 쿠키가 없으면 기존대로 Basic Auth(로그인 정보는 사용자 `Documents\lightsail-basic-auth.txt`).
+  - 같은 서버의 다른 앱: `joogaem-eat`(eatNwrite+자기관리기록), `joogaem-focus`(뽀모도로) — 전부 `.duckdns.org`
+  - 구주소 http://43.202.142.135:8001 및 :3000은 **아직 살아 있음**(이관 확인 후 정리 예정)
+  - 전환 절차·실전 함정은 [docs/HTTPS_SETUP.md](docs/HTTPS_SETUP.md). nginx는 **1.18.0**이라 `http2 on;`(1.25.1+) 문법 쓰면 안 뜬다.
 - 구조: nginx(:8001)가 정적 프론트(`/var/www/quiz`) 직접 서빙 + `/api/*`만 백엔드(127.0.0.1:8011, 내부 전용)로 프록시. **nginx가 `/api` 접두사를 벗겨 전달하므로 백엔드 라우트는 prefix 없이 그대로.**
 - systemd 서비스: `quiz-backend`만 (자동 재시작). ~~quiz-frontend~~ Next 서버는 폐지됨.
 - 재배포:
