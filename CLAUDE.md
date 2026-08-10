@@ -22,6 +22,8 @@
 - 재배포:
   - 백엔드: 서버에서 `git pull` + `sudo systemctl restart quiz-backend`
   - 프론트: 로컬에서 `NEXT_PUBLIC_API_URL=/api`로 `next build` → `out/`을 tar→scp→서버 `/var/www/quiz`에 전개(`--strip-components=1`). **서버 빌드·Next 서버·standalone 절차 전부 폐지.**
+  - ⚠️ **빌드는 반드시 PowerShell에서** (`$env:NEXT_PUBLIC_API_URL="/api"; npx next build`). Git Bash로 하면 MSYS 경로 변환이 `/api`를 `C:/Program Files/Git/api`로 바꿔 번들에 박아버려 전 API 호출이 `file:///C:/...`로 나간다 (2026-08-10 실제 발생).
+  - 배포 후 검증: 번들에 `"/api"`가 있고 `Program Files`가 없어야 한다 — `grep -rl '"/api"' out/_next/static/chunks/` / `grep -r "Program Files" out/_next/static/chunks/`
 - **1GB RAM이라 서버에서 npm install/build 절대 금지** (OOM으로 SSH까지 마비됨) — 정적 export 전환으로 서버 빌드 자체가 불필요해짐
 - schedulingBot은 2026-07-07 제거됨(포트 8000 비어 있음). pm2도 제거(전부 systemd).
 - SSH 키: `LightsailDefaultKey-ap-northeast-2.pem` (git 제외) 또는 PC의 `~/.ssh/id_ed25519` (2026-07-07 등록)
