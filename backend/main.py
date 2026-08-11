@@ -910,6 +910,37 @@ def _answered_question_ids() -> set[str]:
     return {r["question_id"] for r in _select_all("user_answers", "question_id")}
 
 
+def _drill_order(all_q: list[dict], prev: dict[str, dict]) -> list[dict]:
+    """전부 한 번씩 푼 뒤의 반복(암기) 라운드 순서 — PHASE1_SPEC §9-8.
+
+    이전에는 다 풀면 all_q[:limit] 를 돌려줘서 **맨 앞 8개만 영원히** 나왔다
+    (교과교육 58장 중 50장은 다시 볼 방법이 없었다). 고시문 암기는 반복이 전부라
+    전체가 순환하도록 바꾼다.
+
+    정렬: 아직 못 맞힌 것 먼저 → 마지막으로 푼 지 오래된 것 먼저.
+    답하면 answered_at이 갱신되어 뒤로 밀리므로, 계속 이어서 누르면 전체가 한 바퀴 돈다.
+    """
+    def key(q):
+        a = prev.get(q["id"]) or {}
+        score = a.get("score")
+        # 만점이 아니면(=아직 못 외운 것, 채점 보류 포함) 앞으로 당긴다
+        mastered = 1 if (score is not None and score >= 1.0) else 0
+        return (mastered, a.get("answered_at") or "")
+
+    return sorted(all_q, key=key)
+
+
+def _pick_learn_set(all_q: list[dict], prev: dict[str, dict], limit: int) -> tuple[list[dict], int, str]:
+    """(출제 문항, 남은 수, 라운드 종류) — 미답이 있으면 진도, 없으면 반복 라운드."""
+    unanswered = [q for q in all_q if q["id"] not in prev]
+    if unanswered:
+        pool, round_mode = unanswered, "new"
+    else:
+        pool, round_mode = _drill_order(all_q, prev), "drill"
+    questions = pool[:limit]
+    return questions, max(0, len(pool) - len(questions)), round_mode
+
+
 def _learn_lectures() -> list[dict]:
     """강의 + 그 강의에 연결된 문항 id 목록."""
     lectures = get_lectures()
@@ -988,9 +1019,7 @@ async def learn_curriculum(chapter: str, limit: int = 8):
     for r in rows:
         prev[r["question_id"]] = r
 
-    unanswered = [q for q in all_q if q["id"] not in prev]
-    questions = (unanswered or all_q)[:limit]
-    remaining = max(0, len(unanswered) - len(questions))
+    questions, remaining, round_mode = _pick_learn_set(all_q, prev, limit)
 
     return {
         "lecture": {"id": chapter, "lecture_no": 0,
@@ -1003,6 +1032,7 @@ async def learn_curriculum(chapter: str, limit: int = 8):
         # 교과교육 카드는 단답·빈칸뿐이라 서술 단계가 없다 — 응답 모양만 학습 세션과 맞춘다
         "stage": 1,
         "essay_total": 0,
+        "round_mode": round_mode,
     }
 
 
@@ -1059,15 +1089,9 @@ async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE, stage: in
         pool = [q for q in all_q if q["type"] == "essay"]
         questions = pool[:limit]
         remaining = max(0, len(pool) - len(questions))
+        round_mode = "essay"
     else:
-        unanswered = [q for q in all_q if q["id"] not in prev]
-        if unanswered:
-            questions = unanswered[:limit]
-            remaining = len(unanswered) - len(questions)
-        else:
-            # 이미 다 푼 강의 → 복습으로 전체를 다시 보여준다
-            questions = all_q[:limit]
-            remaining = 0
+        questions, remaining, round_mode = _pick_learn_set(all_q, prev, limit)
 
     return {
         "lecture": {"id": lecture["id"], "lecture_no": lecture["lecture_no"],
@@ -1079,6 +1103,7 @@ async def learn_part(lecture_id: str, limit: int = LEARN_SESSION_SIZE, stage: in
         "lecture_answered": len(prev),
         "stage": stage,
         "essay_total": essay_total,
+        "round_mode": round_mode,
     }
 
 

@@ -242,6 +242,8 @@ export interface LearnSession {
   /** 1=전 유형(서술형은 키워드 회상), 2=서술형만 문장으로 작성 */
   stage: number;
   essay_total: number;
+  /** new=아직 안 푼 문항 진도, drill=전부 푼 뒤 암기 반복 라운드, essay=서술 연습 */
+  round_mode?: "new" | "drill" | "essay";
 }
 
 export interface LectureProgress {

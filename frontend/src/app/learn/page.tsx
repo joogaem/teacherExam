@@ -211,6 +211,8 @@ export default function LearnPage() {
   const isCurriculum = !session.lecture.lecture_no;
   // 1단계에서는 서술형을 키워드 회상으로 낮춰 제시한다 (§9-5)
   const keywordStage = session.stage === 1;
+  // 전부 한 번씩 푼 뒤의 암기 반복 라운드 (§9-8)
+  const isDrill = session.round_mode === "drill";
 
   return (
     <Shell>
@@ -229,7 +231,17 @@ export default function LearnPage() {
               서술 연습
             </span>
           )}
+          {isDrill && (
+            <span className="ml-2 px-2 py-0.5 rounded bg-amber-500 text-white text-xs align-middle">
+              🔁 반복
+            </span>
+          )}
         </h2>
+        {isDrill && (
+          <p className="text-sm text-gray-500 mt-1">
+            한 바퀴 다 돌았어요. 이제 못 외운 것부터 다시 돌립니다.
+          </p>
+        )}
         <div className="bg-gray-200 rounded-full h-2 mt-2">
           <div className="bg-blue-500 h-2 rounded-full transition-all"
                style={{ width: `${(solvedCount / Math.max(qs.length, 1)) * 100}%` }} />
@@ -309,9 +321,12 @@ export default function LearnPage() {
           )}
           <div className="flex gap-2 flex-wrap">
             {session.remaining > 0 && (
+              // 반복 라운드에서는 남은 개수를 숫자로 띄우지 않는다 — 밀린 숙제처럼 보이면 안 됨(§0-2)
               <button onClick={() => reopenCurrent()}
-                      className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-semibold text-sm">
-                이어서 {session.remaining}문제 →
+                      className={`px-5 py-2.5 rounded-xl text-white font-semibold text-sm ${
+                        isDrill ? "bg-amber-500" : "bg-blue-600"
+                      }`}>
+                {isDrill ? "🔁 8문제 더 →" : `이어서 ${session.remaining}문제 →`}
               </button>
             )}
             {session.remaining === 0 && nextPart && (
